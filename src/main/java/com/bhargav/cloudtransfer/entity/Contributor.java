@@ -35,6 +35,17 @@ public class Contributor {
     @Column(name = "used_capacity_bytes")
     private Long usedCapacityBytes = 0L;
 
+    @Column(name = "allocated_capacity_bytes")
+    private Long allocatedCapacityBytes;
+
+    public Long getAllocatedCapacityBytes() {
+        return allocatedCapacityBytes;
+    }
+
+    public void setAllocatedCapacityBytes(Long allocatedCapacityBytes) {
+        this.allocatedCapacityBytes = allocatedCapacityBytes;
+    }
+
     // Helper method
     public Long getAvailableSpace() {
         if (totalCapacityBytes == null || usedCapacityBytes == null) {

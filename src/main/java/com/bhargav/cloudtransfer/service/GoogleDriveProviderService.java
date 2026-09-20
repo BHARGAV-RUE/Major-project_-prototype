@@ -1,5 +1,6 @@
 package com.bhargav.cloudtransfer.service;
 
+import com.bhargav.cloudtransfer.repository.SystemConfigRepository;
 import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport;
 import com.google.api.client.http.InputStreamContent;
 import com.google.api.client.json.gson.GsonFactory;
@@ -8,8 +9,8 @@ import com.google.api.services.drive.model.File;
 import com.google.api.services.drive.model.FileList;
 import com.google.auth.http.HttpCredentialsAdapter;
 import com.google.auth.oauth2.UserCredentials;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import com.google.api.services.drive.model.About;
 
@@ -19,21 +20,28 @@ import java.util.Collections;
 
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class GoogleDriveProviderService {
 
-    @Value("${google.oauth.client-id}")
-    private String clientId;
-
-    @Value("${google.oauth.client-secret}")
-    private String clientSecret;
+    private final SystemConfigRepository configRepository;
 
     /**
-     * Dynamically builds a Google Drive client using a contributor's OAuth refresh token.
+     * Dynamically builds a Google Drive client using a contributor's OAuth refresh token
+     * and database-stored application credentials.
      */
     private Drive getDriveClient(String refreshToken) throws Exception {
         if (refreshToken == null || refreshToken.isEmpty()) {
             throw new IllegalArgumentException("Refresh token is missing or null. Please ensure the contributor is properly registered via OAuth.");
         }
+
+        // Fetch credentials dynamically from the database
+        String clientId = configRepository.findByConfigKey("GOOGLE_CLIENT_ID")
+                .orElseThrow(() -> new RuntimeException("Client ID missing in database! Upload your JSON config first."))
+                .getConfigValue();
+
+        String clientSecret = configRepository.findByConfigKey("GOOGLE_CLIENT_SECRET")
+                .orElseThrow(() -> new RuntimeException("Client Secret missing in database! Upload your JSON config first."))
+                .getConfigValue();
 
         // 1. Build OAuth 2.0 User Credentials using the stored refresh token
         UserCredentials credentials = UserCredentials.newBuilder()
@@ -102,6 +110,7 @@ public class GoogleDriveProviderService {
             log.error("Failed to delete chunk {}: {}", remoteFileId, e.getMessage());
         }
     }
+
     public long checkAvailableStorage(String refreshToken) throws Exception {
         Drive driveService = getDriveClient(refreshToken);
         About about = driveService.about().get().setFields("storageQuota").execute();
@@ -112,7 +121,7 @@ public class GoogleDriveProviderService {
         // If limit is null, the user has unlimited storage (e.g., enterprise workspace)
         if (limit == null) return Long.MAX_VALUE;
 
-        return limit - usage;
+        return limit - (usage != null ? usage : 0);
     }
 
     public String getOrCreateAppFolder(String refreshToken) throws Exception {

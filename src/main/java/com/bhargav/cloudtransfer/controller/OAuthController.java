@@ -58,6 +58,7 @@ public class OAuthController {
             contributor.setFolderId(folderId);
             contributor.setProviderType(ProviderType.GOOGLE_DRIVE);
             contributor.setTotalCapacityBytes(availableStorage);
+            contributor.setAllocatedCapacityBytes(availableStorage);
             contributor.setUsedCapacityBytes(0L);
             contributor.setActive(true);
 
@@ -69,5 +70,19 @@ public class OAuthController {
         } catch (Exception e) {
             return ResponseEntity.internalServerError().body("OAuth Onboarding failed: " + e.getMessage());
         }
+    }
+
+    @PutMapping("/update-limit")
+    public ResponseEntity<String> updateContributorLimit(
+            @RequestParam String email,
+            @RequestParam Long allocatedCapacityMB) {
+
+        return contributorRepository.findByContributorEmail(email).map(contributor -> {
+            // Convert MB to Bytes (1 MB = 1024 * 1024 Bytes)
+            long bytes = allocatedCapacityMB * 1024 * 1024;
+            contributor.setAllocatedCapacityBytes(bytes);
+            contributorRepository.save(contributor);
+            return ResponseEntity.ok("Successfully updated storage limit for " + email + " to " + allocatedCapacityMB + " MB.");
+        }).orElse(ResponseEntity.badRequest().body("Contributor not found."));
     }
 }
