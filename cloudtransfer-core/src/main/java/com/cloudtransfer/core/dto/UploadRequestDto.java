@@ -1,0 +1,11 @@
+package com.cloudtransfer.core.dto;
+
+import lombok.Data;
+
+@Data
+public class UploadRequestDto {
+    private String senderEmail;
+    private String filename;
+    private Long totalSizeBytes;
+    private Integer expiryDays;
+}
