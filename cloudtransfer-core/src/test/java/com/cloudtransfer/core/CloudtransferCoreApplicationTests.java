@@ -1,10 +1,10 @@
-package com.bhargav.cloudtransfer;
+package com.cloudtransfer.core;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 
 @SpringBootTest
-class CloudtransferApplicationTests {
+class CloudtransferCoreApplicationTests {
 
 	@Test
 	void contextLoads() {
