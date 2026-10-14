@@ -15,6 +15,8 @@ public class RabbitMQConfig {
     public static final String UPLOAD_INIT_QUEUE = "upload-init-queue";
     public static final String EXCHANGE = "cloudtransfer-exchange";
     public static final String ROUTING_KEY = "upload.init";
+    public static final String CHUNK_HASH_QUEUE = "chunk-hash-queue";
+    public static final String HASH_ROUTING_KEY = "chunk.hash";
 
     @Bean
     public Queue uploadInitQueue() {
@@ -35,5 +37,15 @@ public class RabbitMQConfig {
     @Bean
     public MessageConverter jsonMessageConverter() {
         return new Jackson2JsonMessageConverter();
+    }
+
+    @Bean
+    public Queue chunkHashQueue() {
+        return new Queue(CHUNK_HASH_QUEUE, true);
+    }
+
+    @Bean
+    public Binding hashBinding(Queue chunkHashQueue, DirectExchange exchange) {
+        return BindingBuilder.bind(chunkHashQueue).to(exchange).with(HASH_ROUTING_KEY);
     }
 }
