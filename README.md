@@ -179,3 +179,12 @@ http://localhost:8081/api/v1/stream/upload-chunk POST
     "chunkHash": "b3424f37122d25b6665da8a66594f7baffa5b5172865172bd1d8948dfc5f711a",
     "status": "success"
 }
+
+COPY PASTE THIS 10 TIMES 
+Chunk 10 routed to cloud and hash queued successfully.
+CONSOLE:
+All 10 chunks received for Session: 123e4567-e89b-12d3-a456-426614174000
+==================================================
+MERKLE ROOT GENERATED: 40a722921439c0cc78383c8d2bf76ee832a4c6e074c8e3dee741a37c3be37a12
+Ready for Blockchain Anchoring!
+==================================================
