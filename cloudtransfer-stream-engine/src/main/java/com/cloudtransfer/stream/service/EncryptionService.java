@@ -1,8 +1,8 @@
 package com.cloudtransfer.stream.service;
 
 import org.springframework.stereotype.Service;
-
 import com.cloudtransfer.stream.exception.ChunkProcessingException;
+
 import javax.crypto.Cipher;
 import javax.crypto.spec.ChaCha20ParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
@@ -23,6 +23,13 @@ public class EncryptionService {
         MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
         byte[] hashedKey = sha256.digest(keyBytes); // Guarantees exactly 256 bits (32 bytes)
         return new SecretKeySpec(hashedKey, ALGORITHM);
+    }
+
+    /**
+     * Alias method to support calls to encrypt() from controllers.
+     */
+    public byte[] encrypt(byte[] rawChunkData) {
+        return encryptChunk(rawChunkData);
     }
 
     /**

@@ -1,35 +1,37 @@
 package com.cloudtransfer.core.entity;
 
 import jakarta.persistence.*;
-import lombok.Data;
+import lombok.*;
+
 import java.util.UUID;
 
-@Data
 @Entity
 @Table(name = "file_chunks")
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
 public class FileChunk {
+
     @Id
-    @GeneratedValue(strategy = GenerationType.UUID)
+    @GeneratedValue(strategy = GenerationType.AUTO)
     private UUID id;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "session_id", nullable = false)
+    @JoinColumn(name = "session_id")
     private TransferSession session;
 
-    @Column(nullable = false)
     private Integer chunkIndex;
+    private String chunkHash;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "primary_contributor_id")
     private Contributor primaryContributor;
 
-    private String primaryRemoteId;
-
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "replica_contributor_id")
     private Contributor replicaContributor;
 
-    private String replicaRemoteId;
-
-    private String chunkHash;
+    private String cloudFileId;
+    private String providerName;
 }

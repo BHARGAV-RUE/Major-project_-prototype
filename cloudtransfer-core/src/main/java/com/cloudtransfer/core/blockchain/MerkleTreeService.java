@@ -1,4 +1,4 @@
-package com.cloudtransfer.core.blockchain;
+package com.cloudtransfer.core.service;
 
 import org.springframework.stereotype.Service;
 import java.security.MessageDigest;
@@ -7,6 +7,30 @@ import java.util.List;
 
 @Service
 public class MerkleTreeService {
+
+    private final BlockchainService blockchainService;
+
+    public MerkleTreeService(BlockchainService blockchainService) {
+        this.blockchainService = blockchainService;
+    }
+
+    /**
+     * Processes collected chunk hashes, generates the Merkle Root, and triggers blockchain anchoring.
+     */
+    public String processAllChunks(String sessionId, List<String> chunkHashes) {
+        // 1. Calculate the real SHA-256 Merkle Root
+        String root = generateMerkleRoot(chunkHashes);
+
+        System.out.println("==================================================");
+        System.out.println("MERKLE ROOT GENERATED: " + root);
+        System.out.println("Ready for Blockchain Anchoring!");
+        System.out.println("==================================================");
+
+        // 2. Trigger the blockchain anchoring service
+        blockchainService.anchorRootToBlockchain(sessionId, root);
+
+        return root;
+    }
 
     /**
      * Takes a list of individual chunk SHA-256 hashes and reduces them to a single Merkle Root.
@@ -24,7 +48,7 @@ public class MerkleTreeService {
 
             for (int i = 0; i < currentLevel.size(); i += 2) {
                 String left = currentLevel.get(i);
-                // If there is an odd number of hashes, duplicate the last one (Standard Merkle protocol)
+                // Duplicate last hash if odd number of elements (Standard Merkle protocol)
                 String right = (i + 1 < currentLevel.size()) ? currentLevel.get(i + 1) : left;
 
                 nextLevel.add(hashPair(left, right));
@@ -38,7 +62,7 @@ public class MerkleTreeService {
     private String hashPair(String left, String right) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            String combined = left + right; // Concatenate the two hex strings
+            String combined = left + right;
             byte[] hashBytes = digest.digest(combined.getBytes());
 
             StringBuilder hexString = new StringBuilder(2 * hashBytes.length);

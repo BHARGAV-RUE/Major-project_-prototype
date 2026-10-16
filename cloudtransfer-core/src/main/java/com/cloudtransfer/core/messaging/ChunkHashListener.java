@@ -1,8 +1,12 @@
 package com.cloudtransfer.core.messaging;
 
-import com.cloudtransfer.core.blockchain.MerkleTreeService;
-import com.cloudtransfer.core.config.RabbitMQConfig;
 import com.cloudtransfer.core.dto.ChunkHashMessage;
+import com.cloudtransfer.core.entity.FileChunk;
+import com.cloudtransfer.core.entity.TransferSession;
+import com.cloudtransfer.core.repository.FileChunkRepository;
+import com.cloudtransfer.core.repository.TransferSessionRepository;
+import com.cloudtransfer.core.service.MerkleTreeService;
+import com.cloudtransfer.core.config.RabbitMQConfig;
 import lombok.RequiredArgsConstructor;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.stereotype.Component;
@@ -16,31 +20,60 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ChunkHashListener {
 
     private final MerkleTreeService merkleTreeService;
+    private final FileChunkRepository fileChunkRepository;
+    private final TransferSessionRepository transferSessionRepository; // <--- Added Repository
 
-    // Temporary in-memory store for session hashes (in production, this queries PostgreSQL)
     private final ConcurrentHashMap<String, List<String>> sessionHashes = new ConcurrentHashMap<>();
 
     @RabbitListener(queues = RabbitMQConfig.CHUNK_HASH_QUEUE)
     public void handleChunkHash(ChunkHashMessage message) {
         String sessionId = message.getSessionId().toString();
 
-        System.out.println("BRAIN RECEIVED HASH FOR CHUNK " + message.getChunkIndex());
+        System.out.println("BRAIN RECEIVED CHUNK #" + message.getChunkIndex() +
+                " | Hash: " + message.getChunkHash() +
+                " | Cloud ID: " + message.getCloudFileId() +
+                " | Provider: " + message.getProviderName());
 
-        // Store the hash
+        // 1. Save metadata to PostgreSQL via FileChunkRepository
+        // 1. Save metadata to PostgreSQL via FileChunkRepository
+        try {
+            // Find the existing session, or create a mock one with required fields for Postman testing
+            TransferSession session = transferSessionRepository.findById(message.getSessionId())
+                    .orElseGet(() -> {
+                        TransferSession newSession = new TransferSession();
+                        newSession.setId(message.getSessionId());
+
+                        // Populate required fields to satisfy NOT NULL database constraints
+                        newSession.setExpiresAt(java.time.LocalDateTime.now().plusDays(1));
+                        newSession.setOriginalFilename("postman_test_file.bin");
+                        newSession.setSenderEmail("tester@cloudtransfer.local");
+                        newSession.setTotalSizeBytes(1024L);
+
+                        return transferSessionRepository.save(newSession);
+                    });
+
+            FileChunk chunk = new FileChunk();
+            chunk.setSession(session);
+            chunk.setChunkIndex(message.getChunkIndex());
+            chunk.setChunkHash(message.getChunkHash());
+            chunk.setCloudFileId(message.getCloudFileId());
+            chunk.setProviderName(message.getProviderName());
+
+            fileChunkRepository.save(chunk);
+        } catch (Exception e) {
+            System.err.println("Could not save FileChunk to DB: " + e.getMessage());
+        }
+
+        // 2. Accumulate hashes for Merkle Tree
         sessionHashes.putIfAbsent(sessionId, new ArrayList<>());
         sessionHashes.get(sessionId).add(message.getChunkHash());
 
-        // For testing: If we receive 10 hashes, generate the Merkle Root!
-        // (You can adjust this number based on your Postman test payload)
+        // 3. Once 10 chunks arrive, calculate Merkle Root and trigger Blockchain
         if (sessionHashes.get(sessionId).size() == 10) {
-            System.out.println("All chunks received for Session: " + sessionId);
-            String merkleRoot = merkleTreeService.generateMerkleRoot(sessionHashes.get(sessionId));
-            System.out.println("==================================================");
-            System.out.println("MERKLE ROOT GENERATED: " + merkleRoot);
-            System.out.println("Ready for Blockchain Anchoring!");
-            System.out.println("==================================================");
+            System.out.println("All 10 chunks received for Session: " + sessionId);
 
-            // Clean up memory
+            merkleTreeService.processAllChunks(sessionId, sessionHashes.get(sessionId));
+
             sessionHashes.remove(sessionId);
         }
     }
