@@ -85,10 +85,10 @@ public class DistributionService {
             assignments.add(new ChunkAssignmentDto(
                     i,
                     primary.getId(),
-                    primary.getProvider(),
+                    primary.getCloudProvider(),
                     primary.getRefreshToken(),
                     replica.getId(),
-                    replica.getProvider(),
+                    replica.getCloudProvider(),
                     replica.getRefreshToken()
             ));
         }

@@ -1,29 +1,33 @@
 package com.cloudtransfer.core.entity;
 
 import jakarta.persistence.*;
-import lombok.Data;
+import lombok.*;
 import java.util.UUID;
 
-@Data
 @Entity
 @Table(name = "contributors")
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
 public class Contributor {
+
     @Id
-    @GeneratedValue(strategy = GenerationType.UUID)
+    @GeneratedValue(strategy = GenerationType.AUTO)
     private UUID id;
 
-    @Column(unique = true, nullable = false)
     private String email;
 
-    @Column(nullable = false)
-    private String provider; // e.g., GOOGLE_DRIVE, DROPBOX
+    // "GOOGLE_DRIVE" or "DROPBOX"
+    private String cloudProvider;
 
-    @Column(nullable = false, length = 1000)
+    // The offline access token used by Muscle to upload chunks quietly
+    @Column(length = 500)
     private String refreshToken;
 
-    @Column(nullable = false)
-    private Long allocatedBytes;
+    // Space the contributor is willing to donate (in bytes)
+    private Long maxStorageQuotaBytes;
 
-    @Column(nullable = false)
-    private String status; // PENDING, ACTIVE, DRAINING, BANNED
+    // "ACTIVE", "PENDING_DELETION", "OFFLINE"
+    private String status;
 }

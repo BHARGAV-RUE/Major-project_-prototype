@@ -11,7 +11,7 @@ import java.util.UUID;
 @Repository
 public interface ContributorRepository extends JpaRepository<Contributor, UUID> {
 
-    // Finds active contributors who have enough free space available
-    @Query("SELECT c FROM Contributor c WHERE c.status = 'ACTIVE' ORDER BY c.allocatedBytes DESC")
+    @Query("SELECT c FROM Contributor c WHERE c.status = 'ACTIVE'")
     List<Contributor> findActiveContributors();
+
 }

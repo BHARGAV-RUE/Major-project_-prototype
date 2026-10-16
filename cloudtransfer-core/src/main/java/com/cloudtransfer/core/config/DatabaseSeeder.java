@@ -35,9 +35,9 @@ public class DatabaseSeeder implements CommandLineRunner {
     private Contributor createFake(String email, String provider, long space) {
         Contributor c = new Contributor();
         c.setEmail(email);
-        c.setProvider(provider);
+        c.setCloudProvider(provider);
         c.setRefreshToken("fake_oauth_token_" + email);
-        c.setAllocatedBytes(space);
+        c.setMaxStorageQuotaBytes(space);
         c.setStatus("ACTIVE");
         return c;
     }
