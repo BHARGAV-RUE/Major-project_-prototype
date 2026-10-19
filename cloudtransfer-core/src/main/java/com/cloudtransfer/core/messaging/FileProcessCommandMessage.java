@@ -15,9 +15,9 @@ public class FileProcessCommandMessage implements Serializable {
 
     private String fileId; // The unique ID of the file in your system
     private String fileName;
-    private String localFilePath; // Where Muscle can find the temporary file to chunk it
+    private String filePath; // Where Muscle can find the temporary file to chunk it
 
     // This is the bridge! Brain passes the DB tokens to Muscle here:
-    private List<CloudProviderTokenDTO> volunteerTokens;
+    private List<CloudProviderTokenDTO> tokens;
 
 }

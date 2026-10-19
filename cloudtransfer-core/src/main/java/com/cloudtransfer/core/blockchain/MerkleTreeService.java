@@ -1,5 +1,6 @@
-package com.cloudtransfer.core.service;
+package com.cloudtransfer.core.blockchain;
 
+import com.cloudtransfer.core.service.BlockchainService;
 import org.springframework.stereotype.Service;
 import java.security.MessageDigest;
 import java.util.ArrayList;

@@ -1,46 +1,34 @@
 package com.cloudtransfer.stream.messaging;
 
 import com.cloudtransfer.stream.config.RabbitMQConfig;
-import com.cloudtransfer.stream.dto.SessionInitMessage;
-import com.cloudtransfer.stream.dto.FileProcessCommandMessage;
+import com.cloudtransfer.stream.dto.FileProcessCommandMessage; // <-- Added missing import
+import com.cloudtransfer.stream.service.FileChunkProcessorService;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.stereotype.Component;
 
 @Component
+@Slf4j
+@RequiredArgsConstructor
 public class SessionListener {
 
-    @RabbitListener(queues = RabbitMQConfig.UPLOAD_INIT_QUEUE)
-    public void handleSessionInit(SessionInitMessage message) {
-        System.out.println("==================================================");
-        System.out.println("MUSCLE RECEIVED NEW UPLOAD ORDER!");
-        System.out.println("Session ID: " + message.getSessionId());
-        System.out.println("Expecting Chunks: " + message.getTotalChunks());
-        System.out.println("Ready to begin receiving file streams...");
-        System.out.println("==================================================");
+    private final FileChunkProcessorService fileChunkProcessorService;
 
-        // In the next phase, we will initialize the encryption streams here
-    }
-
-    // --- Added for Brain -> Muscle File Command ---
     @RabbitListener(queues = RabbitMQConfig.FILE_PROCESS_QUEUE)
-    public void receiveFileCommand(FileProcessCommandMessage message) {
-        System.out.println("\n--------------------------------------------------");
-        System.out.println(" [Muscle] Received command for file: " + message.getFileName());
-        System.out.println(" [Muscle] File ID: " + message.getFileId());
-        System.out.println(" [Muscle] Local File Path: " + message.getLocalFilePath());
+    public void handleFileProcessCommand(FileProcessCommandMessage message) {
+        log.info("--------------------------------------------------");
+        log.info("[Muscle] SessionListener received file command: {}", message.getFilename());
+        log.info("[Muscle] Session ID: {}", message.getFileId());
+        log.info("[Muscle] Path: {}", message.getFilePath());
+        log.info("[Muscle] Volunteers count: {}", message.getTokens() != null ? message.getTokens().size() : 0);
+        log.info("--------------------------------------------------");
 
-        if (message.getVolunteerTokens() != null) {
-            System.out.println(" [Muscle] Received " + message.getVolunteerTokens().size() + " OAuth tokens:");
-            message.getVolunteerTokens().forEach(token -> {
-                System.out.println("   -> Provider: " + token.getProviderName() +
-                        " | Volunteer: " + token.getVolunteerEmail() +
-                        " | Token: " + token.getRefreshToken());
-            });
-        } else {
-            System.out.println(" [Muscle] WARNING: No OAuth tokens received!");
-        }
-        System.out.println("--------------------------------------------------\n");
-
-        // Muscle is now ready to take these tokens and start chunking & uploading!
+        fileChunkProcessorService.processAndUploadFile(
+                message.getFileId(),
+                message.getFilename(),
+                message.getFilePath(),
+                message.getTokens()
+        );
     }
 }

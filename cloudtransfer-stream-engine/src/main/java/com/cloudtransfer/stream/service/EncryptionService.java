@@ -1,13 +1,14 @@
 package com.cloudtransfer.stream.service;
 
-import org.springframework.stereotype.Service;
 import com.cloudtransfer.stream.exception.ChunkProcessingException;
+import org.springframework.stereotype.Service;
 
 import javax.crypto.Cipher;
 import javax.crypto.spec.ChaCha20ParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.Arrays;
 
@@ -61,7 +62,7 @@ public class EncryptionService {
             return combinedPayload;
 
         } catch (Exception e) {
-            throw new ChunkProcessingException("ChaCha20 stream encryption/decryption failed", e);
+            throw new ChunkProcessingException("ChaCha20 stream encryption failed", e);
         }
     }
 
@@ -84,7 +85,26 @@ public class EncryptionService {
             return cipher.doFinal(encryptedData);
 
         } catch (Exception e) {
-            throw new ChunkProcessingException("ChaCha20 stream encryption/decryption failed", e);
+            throw new ChunkProcessingException("ChaCha20 stream decryption failed", e);
+        }
+    }
+
+    /**
+     * Computes the SHA-256 hash of an encrypted chunk for Merkle tree generation & Polygon blockchain logging.
+     */
+    public String calculateSha256Hash(byte[] data) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(data);
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hash) {
+                String hex = Integer.toHexString(0xff & b);
+                if (hex.length() == 1) hexString.append('0');
+                hexString.append(hex);
+            }
+            return hexString.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new ChunkProcessingException("SHA-256 hashing failed during chunk verification", e);
         }
     }
 }

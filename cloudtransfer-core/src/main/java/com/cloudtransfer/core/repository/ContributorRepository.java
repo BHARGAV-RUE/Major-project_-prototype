@@ -13,5 +13,4 @@ public interface ContributorRepository extends JpaRepository<Contributor, UUID> 
 
     @Query("SELECT c FROM Contributor c WHERE c.status = 'ACTIVE'")
     List<Contributor> findActiveContributors();
-
 }

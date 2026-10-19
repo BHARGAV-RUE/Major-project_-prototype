@@ -3,6 +3,7 @@ package com.cloudtransfer.core.service;
 import com.cloudtransfer.core.config.RabbitMQConfig;
 import com.cloudtransfer.core.dto.BlueprintResponseDto;
 import com.cloudtransfer.core.dto.ChunkAssignmentDto;
+import com.cloudtransfer.core.dto.CloudProviderTokenDTO;
 import com.cloudtransfer.core.dto.SessionInitMessage;
 import com.cloudtransfer.core.entity.Contributor;
 import com.cloudtransfer.core.entity.FileChunk;
@@ -29,7 +30,32 @@ public class DistributionService {
     private final RabbitTemplate rabbitTemplate;
 
     private static final long MAX_CHUNK_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
-    private static final long MAX_VOLUNTEER_LOAD_BYTES = 1024 * 1024 * 1024; // 1 GB Circuit Breaker
+    private static final long MAX_VOLUNTEER_LOAD_BYTES = 1024 * 1024 * 1024; // 1 GB Circuit Breaker Limit per Volunteer
+
+    /**
+     * Fetches active volunteer storage tokens from PostgreSQL database.
+     */
+    public List<CloudProviderTokenDTO> getAvailableVolunteerTokens() {
+        List<Contributor> activeContributors = contributorRepository.findActiveContributors();
+        List<CloudProviderTokenDTO> tokens = new ArrayList<>();
+
+        for (Contributor contributor : activeContributors) {
+            tokens.add(new CloudProviderTokenDTO(
+                    contributor.getCloudProvider(), // "GOOGLE_DRIVE" or "DROPBOX"
+                    contributor.getEmail(),
+                    contributor.getRefreshToken()
+            ));
+        }
+
+        // Fallback mock tokens if DB table is currently empty during local testing
+        if (tokens.isEmpty()) {
+            tokens.add(new CloudProviderTokenDTO("GOOGLE_DRIVE", "volunteer1@gmail.com", "1//0g_fake_google_token..."));
+            tokens.add(new CloudProviderTokenDTO("DROPBOX", "volunteer2@dropbox.com", "sl.fake_dropbox_token..."));
+            tokens.add(new CloudProviderTokenDTO("GOOGLE_DRIVE", "volunteer3@gmail.com", "1//0g_fake_google_token_3..."));
+        }
+
+        return tokens;
+    }
 
     @Transactional
     public BlueprintResponseDto createBlueprint(String senderEmail, String filename, long totalSizeBytes, int expiryDays) {
@@ -41,7 +67,7 @@ public class DistributionService {
         // 2. Fetch Active Volunteers
         List<Contributor> activeContributors = contributorRepository.findActiveContributors();
         if (activeContributors.size() < 3) {
-            throw new IllegalStateException("Not enough active volunteer drives available (Minimum 3 required).");
+            throw new IllegalStateException("The amount of data cannot be transferred. Lack of contributors: Minimum 3 active volunteer drives required.");
         }
 
         // 3. Dynamic Volunteer Allocation Formula: Max(3, Ceiling((Total File Size * 2) / 100MB))
@@ -53,10 +79,11 @@ public class DistributionService {
         int selectedVolunteerCount = Math.min(requiredVolunteers, activeContributors.size());
         List<Contributor> selectedContributors = activeContributors.subList(0, selectedVolunteerCount);
 
-        // 4. Circuit Breaker Check (Max 1GB per volunteer)
+        // 4. Circuit Breaker Check (Max 1GB load per volunteer across primary + replica chunks)
         long calculatedLoadPerVolunteer = primaryPlusReplicaBytes / selectedVolunteerCount;
         if (calculatedLoadPerVolunteer > MAX_VOLUNTEER_LOAD_BYTES) {
-            throw new IllegalStateException("Network capacity limit reached. Please try uploading a smaller file or try again later.");
+            throw new IllegalStateException("The amount of data cannot be transferred. Lack of contributors: Calculated load ("
+                    + (calculatedLoadPerVolunteer / (1024 * 1024)) + " MB) exceeds max volunteer threshold (1024 MB). Please add more volunteers or reduce file size.");
         }
 
         // 5. Save Transfer Session

@@ -1,53 +1,52 @@
 package com.cloudtransfer.core.messaging;
 
+import com.cloudtransfer.core.blockchain.MerkleTreeService; // Fixed import
+import com.cloudtransfer.core.config.RabbitMQConfig;
 import com.cloudtransfer.core.dto.ChunkHashMessage;
 import com.cloudtransfer.core.entity.FileChunk;
 import com.cloudtransfer.core.entity.TransferSession;
 import com.cloudtransfer.core.repository.FileChunkRepository;
 import com.cloudtransfer.core.repository.TransferSessionRepository;
-import com.cloudtransfer.core.service.MerkleTreeService;
-import com.cloudtransfer.core.config.RabbitMQConfig;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Component
+@Slf4j
 @RequiredArgsConstructor
 public class ChunkHashListener {
 
     private final MerkleTreeService merkleTreeService;
     private final FileChunkRepository fileChunkRepository;
-    private final TransferSessionRepository transferSessionRepository; // <--- Added Repository
+    private final TransferSessionRepository transferSessionRepository;
 
     private final ConcurrentHashMap<String, List<String>> sessionHashes = new ConcurrentHashMap<>();
+
+    private static final long CHUNK_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
 
     @RabbitListener(queues = RabbitMQConfig.CHUNK_HASH_QUEUE)
     public void handleChunkHash(ChunkHashMessage message) {
         String sessionId = message.getSessionId().toString();
 
-        System.out.println("BRAIN RECEIVED CHUNK #" + message.getChunkIndex() +
-                " | Hash: " + message.getChunkHash() +
-                " | Cloud ID: " + message.getCloudFileId() +
-                " | Provider: " + message.getProviderName());
+        log.info("[Brain] Received Chunk #{} | Hash: {} | Cloud ID: {} | Provider: {}",
+                message.getChunkIndex(), message.getChunkHash(), message.getCloudFileId(), message.getProviderName());
 
-        // 1. Save metadata to PostgreSQL via FileChunkRepository
-        // 1. Save metadata to PostgreSQL via FileChunkRepository
+        TransferSession session;
         try {
-            // Find the existing session, or create a mock one with required fields for Postman testing
-            TransferSession session = transferSessionRepository.findById(message.getSessionId())
+            session = transferSessionRepository.findById(message.getSessionId())
                     .orElseGet(() -> {
                         TransferSession newSession = new TransferSession();
                         newSession.setId(message.getSessionId());
-
-                        // Populate required fields to satisfy NOT NULL database constraints
-                        newSession.setExpiresAt(java.time.LocalDateTime.now().plusDays(1));
+                        newSession.setExpiresAt(LocalDateTime.now().plusDays(1));
                         newSession.setOriginalFilename("postman_test_file.bin");
                         newSession.setSenderEmail("tester@cloudtransfer.local");
-                        newSession.setTotalSizeBytes(1024L);
+                        newSession.setTotalSizeBytes(15728640L); // 15MB default test size
 
                         return transferSessionRepository.save(newSession);
                     });
@@ -60,17 +59,23 @@ public class ChunkHashListener {
             chunk.setProviderName(message.getProviderName());
 
             fileChunkRepository.save(chunk);
+            log.info("[Brain] Saved FileChunk #{} to PostgreSQL", message.getChunkIndex());
         } catch (Exception e) {
-            System.err.println("Could not save FileChunk to DB: " + e.getMessage());
+            log.error("Could not save FileChunk to DB: {}", e.getMessage());
+            return;
         }
 
-        // 2. Accumulate hashes for Merkle Tree
+        // Accumulate chunk hashes for Merkle Tree construction
         sessionHashes.putIfAbsent(sessionId, new ArrayList<>());
         sessionHashes.get(sessionId).add(message.getChunkHash());
 
-        // 3. Once 10 chunks arrive, calculate Merkle Root and trigger Blockchain
-        if (sessionHashes.get(sessionId).size() == 10) {
-            System.out.println("All 10 chunks received for Session: " + sessionId);
+        // Calculate total expected chunks dynamically based on session file size
+        long totalBytes = (session.getTotalSizeBytes() != null && session.getTotalSizeBytes() > 0) ? session.getTotalSizeBytes() : CHUNK_SIZE_BYTES;
+        int expectedChunks = (int) Math.ceil((double) totalBytes / CHUNK_SIZE_BYTES);
+
+        // Once all chunks arrive, construct Merkle Tree and trigger Blockchain Logging
+        if (sessionHashes.get(sessionId).size() >= expectedChunks) {
+            log.info("All {} expected chunk hashes received for Session: {}", expectedChunks, sessionId);
 
             merkleTreeService.processAllChunks(sessionId, sessionHashes.get(sessionId));
 
