@@ -1,7 +1,7 @@
 package com.cloudtransfer.stream.config;
 
 import org.springframework.amqp.core.*;
-import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
+import org.springframework.amqp.support.converter.JacksonJsonMessageConverter;
 import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -13,6 +13,11 @@ public class RabbitMQConfig {
     public static final String CHUNK_HASH_QUEUE = "chunk-hash-queue";
     public static final String CHUNK_HASH_EXCHANGE = "chunk-hash-exchange";
     public static final String CHUNK_HASH_ROUTING_KEY = "chunk.hash.key";
+
+    // --- Added for Brain -> Muscle File Command ---
+    public static final String FILE_PROCESS_QUEUE = "file-process-queue";
+    public static final String EXCHANGE = "cloudtransfer-exchange";
+    public static final String FILE_PROCESS_ROUTING_KEY = "file.process";
 
     @Bean
     public Queue chunkHashQueue() {
@@ -29,8 +34,24 @@ public class RabbitMQConfig {
         return BindingBuilder.bind(chunkHashQueue).to(chunkHashExchange).with(CHUNK_HASH_ROUTING_KEY);
     }
 
+    // --- New Beans for File Processing ---
     @Bean
-    public MessageConverter jsonMessageConverter() {
-        return new Jackson2JsonMessageConverter();
+    public Queue fileProcessQueue() {
+        return new Queue(FILE_PROCESS_QUEUE, true);
+    }
+
+    @Bean
+    public DirectExchange directExchange() {
+        return new DirectExchange(EXCHANGE);
+    }
+
+    @Bean
+    public Binding fileProcessBinding(Queue fileProcessQueue, DirectExchange directExchange) {
+        return BindingBuilder.bind(fileProcessQueue).to(directExchange).with(FILE_PROCESS_ROUTING_KEY);
+    }
+
+    @Bean
+    public MessageConverter messageConverter() {
+        return new JacksonJsonMessageConverter();
     }
 }

@@ -6,6 +6,7 @@ import lombok.Data;
 public class UploadRequestDto {
     private String senderEmail;
     private String filename;
+    private String filePath;
     private Long totalSizeBytes;
     private Integer expiryDays;
 }
