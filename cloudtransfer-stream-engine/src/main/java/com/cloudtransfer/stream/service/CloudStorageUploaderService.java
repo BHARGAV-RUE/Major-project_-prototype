@@ -128,4 +128,47 @@ public class CloudStorageUploaderService {
             return false;
         }
     }
+
+    /**
+     * Downloads an encrypted chunk from Google Drive by its file ID.
+     */
+    public byte[] downloadChunkFromGoogleDrive(String accessToken, String cloudFileId) {
+        String downloadUrl = "https://www.googleapis.com/drive/v3/files/" + cloudFileId + "?alt=media";
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(accessToken);
+        HttpEntity<Void> request = new HttpEntity<>(headers);
+
+        try {
+            ResponseEntity<byte[]> response = restTemplate.exchange(downloadUrl, HttpMethod.GET, request, byte[].class);
+            if (response.getStatusCode().is2xxSuccessful()) {
+                return response.getBody();
+            }
+        } catch (Exception e) {
+            log.error("Google Drive chunk download failed for fileId {}: {}", cloudFileId, e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * Downloads an encrypted chunk from Dropbox by its path or file ID.
+     */
+    public byte[] downloadChunkFromDropbox(String accessToken, String cloudFileId) {
+        String downloadUrl = "https://content.dropboxapi.com/2/files/download";
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(accessToken);
+        headers.set("Dropbox-API-Arg", "{\"path\": \"/" + cloudFileId + "\"}");
+        HttpEntity<Void> request = new HttpEntity<>(headers);
+
+        try {
+            ResponseEntity<byte[]> response = restTemplate.exchange(downloadUrl, HttpMethod.POST, request, byte[].class);
+            if (response.getStatusCode().is2xxSuccessful()) {
+                return response.getBody();
+            }
+        } catch (Exception e) {
+            log.error("Dropbox chunk download failed for path {}: {}", cloudFileId, e.getMessage());
+        }
+        return null;
+    }
 }
