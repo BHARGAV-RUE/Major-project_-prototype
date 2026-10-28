@@ -4,7 +4,6 @@ WORKDIR /app
 
 # Copy root Maven wrapper and POM files for efficient caching
 COPY mvnw .
-COPY .mvn .mvn
 COPY pom.xml .
 COPY cloudtransfer-core/pom.xml cloudtransfer-core/
 COPY cloudtransfer-stream-engine/pom.xml cloudtransfer-stream-engine/
