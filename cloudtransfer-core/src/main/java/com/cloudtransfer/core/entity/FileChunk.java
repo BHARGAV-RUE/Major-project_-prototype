@@ -1,7 +1,10 @@
 package com.cloudtransfer.core.entity;
 
 import jakarta.persistence.*;
-import lombok.*;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.util.UUID;
 
@@ -14,15 +17,18 @@ import java.util.UUID;
 public class FileChunk {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.AUTO)
+    @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
+
+    private Integer chunkIndex;
+    private Long chunkSizeBytes;
+    private String cloudFileId;
+    private String sha256Hash;
+    private String status;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "session_id")
     private TransferSession session;
-
-    private Integer chunkIndex;
-    private String chunkHash;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "primary_contributor_id")
@@ -32,6 +38,12 @@ public class FileChunk {
     @JoinColumn(name = "replica_contributor_id")
     private Contributor replicaContributor;
 
-    private String cloudFileId;
-    private String providerName;
+    // Explicit accessors for chunkIndex
+    public Integer getChunkIndex() {
+        return chunkIndex;
+    }
+
+    public void setChunkIndex(Integer chunkIndex) {
+        this.chunkIndex = chunkIndex;
+    }
 }

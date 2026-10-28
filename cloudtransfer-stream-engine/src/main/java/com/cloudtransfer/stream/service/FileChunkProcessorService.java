@@ -1,157 +1,205 @@
 package com.cloudtransfer.stream.service;
 
-import com.cloudtransfer.stream.config.RabbitMQConfig;
-import com.cloudtransfer.stream.dto.ChunkHashMessage;
 import com.cloudtransfer.stream.dto.CloudProviderTokenDTO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
-import java.io.FileInputStream;
-import java.util.Arrays;
+import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
-import java.util.UUID;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 @Slf4j
 @RequiredArgsConstructor
 public class FileChunkProcessorService {
 
-    private final EncryptionService encryptionService;
     private final CloudStorageUploaderService cloudStorageUploaderService;
-    private final RabbitTemplate rabbitTemplate;
+    private final EncryptionService encryptionService;
+    private final HashService hashService;
+    private final RestTemplate restTemplate = new RestTemplate();
 
-    private static final int CHUNK_SIZE_BYTES = 50 * 1024 * 1024; // 50 MB
+    private final Map<String, List<CloudProviderTokenDTO>> sessionTokenRegistry = new ConcurrentHashMap<>();
+    private final Map<String, List<Map<String, Object>>> sessionHashBuffer = new ConcurrentHashMap<>();
 
-    public void processAndUploadFile(String sessionId, String filename, String filePath, List<CloudProviderTokenDTO> tokens) {
-        log.info("Starting chunking and encryption pipeline for session: {}, File: {}", sessionId, filename);
-
-        // Safe check for null or non-existent local file path
-        if (filePath == null || !new File(filePath).exists()) {
-            log.warn("Local file path is null or file does not exist at: {}. Executing simulation mode.", filePath);
-            executeSimulatedUpload(sessionId, filename, tokens);
-            return;
+    public void registerSessionTokens(String sessionId, int totalChunks, List<CloudProviderTokenDTO> tokens) {
+        if (tokens != null) {
+            sessionTokenRegistry.put(sessionId, tokens);
         }
+        sessionHashBuffer.computeIfAbsent(sessionId, k -> new ArrayList<>());
+        log.info("[FileChunkProcessor] Session {} pre-registered with {} tokens.", sessionId, tokens != null ? tokens.size() : 0);
+    }
 
-        File file = new File(filePath);
+    public List<Map<String, Object>> getSessionHashes(String sessionId) {
+        return sessionHashBuffer.getOrDefault(sessionId, new ArrayList<>());
+    }
 
-        try (FileInputStream fis = new FileInputStream(file)) {
-            byte[] buffer = new byte[CHUNK_SIZE_BYTES];
-            int bytesRead;
-            int chunkIndex = 0;
+    public void processAndUploadFile(String fileId, String filename, String filePath, List<CloudProviderTokenDTO> tokens) {
+        log.info("[FileChunkProcessor] Processing background upload for fileId: {}, filename: {}, path: {}",
+                fileId, filename, filePath);
 
-            boolean hasTokens = tokens != null && !tokens.isEmpty();
-
-            while ((bytesRead = fis.read(buffer)) > 0) {
-                byte[] actualChunk = (bytesRead == CHUNK_SIZE_BYTES) ? buffer : Arrays.copyOf(buffer, bytesRead);
-
-                // 1. Encrypt chunk using ChaCha20 cipher
-                byte[] encryptedChunk = encryptionService.encryptChunk(actualChunk);
-
-                // 2. Compute SHA-256 Hash for blockchain integrity ledger
-                String chunkHash = encryptionService.calculateSha256Hash(encryptedChunk);
-
-                String chunkFileName = sessionId + "_chunk_" + chunkIndex + ".enc";
-
-                // 3. Safe Dispatch to Primary and Replica Volunteer Drives
-                CloudProviderTokenDTO primaryVolunteer = hasTokens
-                        ? tokens.get(chunkIndex % tokens.size())
-                        : new CloudProviderTokenDTO("GOOGLE_DRIVE", "sim@drive.com", "mock_token");
-
-                CloudProviderTokenDTO replicaVolunteer = hasTokens
-                        ? tokens.get((chunkIndex + 1) % tokens.size())
-                        : new CloudProviderTokenDTO("DROPBOX", "sim@dropbox.com", "mock_token");
-
-                String primaryCloudFileId = dispatchChunkUpload(primaryVolunteer, chunkFileName, encryptedChunk);
-                dispatchChunkUpload(replicaVolunteer, "replica_" + chunkFileName, encryptedChunk);
-
-                // 4. Send ChunkHashMessage feedback to Brain via RabbitMQ
-                dispatchHashToBrain(sessionId, chunkIndex, chunkHash, primaryCloudFileId, primaryVolunteer.getProviderName());
-
-                log.info("Chunk {} processed | Size: {} bytes | Hash: {}", chunkIndex, encryptedChunk.length, chunkHash);
-                chunkIndex++;
+        try {
+            if (tokens == null || tokens.isEmpty()) {
+                tokens = fetchTokensFromCoreEngine(fileId);
             }
 
-            log.info("Successfully completed Phase 2 execution for session: {}", sessionId);
+            File fileOnDisk = new File(filePath);
+            byte[] fileBytes;
+            if (fileOnDisk.exists()) {
+                fileBytes = Files.readAllBytes(fileOnDisk.toPath());
+            } else {
+                log.warn("[FileChunkProcessor] File path not found: {}. Using empty byte payload.", filePath);
+                fileBytes = new byte[0];
+            }
+
+            processAndUploadChunkBytes(fileId, 0, filename, fileBytes, tokens);
 
         } catch (Exception e) {
-            log.error("Error processing file {}: {}", filename, e.getMessage(), e);
+            log.error("[FileChunkProcessor] Background upload processing failed for fileId {}: {}", fileId, e.getMessage(), e);
+            throw new RuntimeException("Background file processing failed: " + e.getMessage(), e);
         }
     }
 
-    private String dispatchChunkUpload(CloudProviderTokenDTO volunteer, String chunkFileName, byte[] encryptedData) {
-        if (volunteer == null) {
-            return "sim_" + chunkFileName;
+    public Map<String, Object> processAndUploadMultipleChunks(
+            String sessionId,
+            Integer chunkIndex,
+            MultipartFile[] files,
+            List<CloudProviderTokenDTO> tokenList) throws Exception {
+
+        log.info("[FileChunkProcessor] Processing HTTP upload for session: {}, chunkIndex: {}", sessionId, chunkIndex);
+
+        if (tokenList == null || tokenList.isEmpty()) {
+            tokenList = sessionTokenRegistry.get(sessionId);
         }
 
-        if ("GOOGLE_DRIVE".equalsIgnoreCase(volunteer.getProviderName())) {
-            String accessToken = cloudStorageUploaderService.refreshGoogleAccessToken(volunteer.getRefreshToken());
-            if (accessToken != null) {
-                boolean uploaded = cloudStorageUploaderService.uploadChunkToGoogleDrive(accessToken, chunkFileName, encryptedData);
-                if (uploaded) return "gdrive_" + chunkFileName;
-            }
-            log.info("[SIMULATION] Google Drive upload simulated for volunteer {}", volunteer.getVolunteerEmail());
-            return "sim_gdrive_" + chunkFileName;
-        } else if ("DROPBOX".equalsIgnoreCase(volunteer.getProviderName())) {
-            String accessToken = cloudStorageUploaderService.refreshDropboxAccessToken(volunteer.getRefreshToken());
-            if (accessToken != null) {
-                boolean uploaded = cloudStorageUploaderService.uploadChunkToDropbox(accessToken, chunkFileName, encryptedData);
-                if (uploaded) return "dropbox_" + chunkFileName;
-            }
-            log.info("[SIMULATION] Dropbox upload simulated for volunteer {}", volunteer.getVolunteerEmail());
-            return "sim_dropbox_" + chunkFileName;
+        if (tokenList == null || tokenList.isEmpty()) {
+            tokenList = fetchTokensFromCoreEngine(sessionId);
         }
-        return "sim_" + chunkFileName;
+
+        if (files == null || files.length == 0) {
+            throw new IllegalArgumentException("No file payload provided for upload.");
+        }
+
+        MultipartFile file = files[0];
+        byte[] rawBytes = file.getBytes();
+        String filename = file.getOriginalFilename() != null ? file.getOriginalFilename() : "chunk_" + chunkIndex;
+
+        return processAndUploadChunkBytes(sessionId, chunkIndex, filename, rawBytes, tokenList);
     }
 
-    private void dispatchHashToBrain(String sessionId, int chunkIndex, String chunkHash, String cloudFileId, String providerName) {
-        try {
-            if (sessionId == null) {
-                sessionId = UUID.randomUUID().toString();
-            }
+    public Map<String, Object> processAndUploadChunkBytes(
+            String sessionId,
+            int chunkIndex,
+            String filename,
+            byte[] rawBytes,
+            List<CloudProviderTokenDTO> tokenList) throws Exception {
 
-            UUID sessionUuid;
-            try {
-                sessionUuid = UUID.fromString(sessionId);
-            } catch (IllegalArgumentException e) {
-                sessionUuid = UUID.nameUUIDFromBytes(sessionId.getBytes());
-            }
+        if (tokenList == null || tokenList.isEmpty()) {
+            tokenList = sessionTokenRegistry.get(sessionId);
+        }
 
-            ChunkHashMessage hashMessage = new ChunkHashMessage(
-                    sessionUuid,
+        if (tokenList == null || tokenList.isEmpty()) {
+            tokenList = fetchTokensFromCoreEngine(sessionId);
+        }
+
+        if (tokenList == null || tokenList.isEmpty()) {
+            throw new IllegalStateException("No volunteer tokens available for session " + sessionId);
+        }
+
+        // Calculate maximum chunk index to detect final chunk completion
+        int maxChunkIndex = tokenList.stream()
+                .mapToInt(CloudProviderTokenDTO::getChunkIndex)
+                .max()
+                .orElse(0);
+
+        // Extract Primary and Replica tokens for this chunk index
+        CloudProviderTokenDTO primaryToken = tokenList.stream()
+                .filter(t -> t.getChunkIndex() == chunkIndex && !t.isReplica())
+                .findFirst()
+                .orElse(tokenList.get(0));
+
+        CloudProviderTokenDTO replicaToken = tokenList.stream()
+                .filter(t -> t.getChunkIndex() == chunkIndex && t.isReplica())
+                .findFirst()
+                .orElse(null);
+
+        // 1. Encrypt raw chunk bytes
+        byte[] encryptedBytes = encryptionService.encryptChunk(rawBytes, sessionId, chunkIndex);
+
+        // 2. Calculate SHA-256 hash
+        String sha256Hash = hashService.calculateSha256(encryptedBytes);
+
+        // 3. Upload Primary Copy to volunteer cloud
+        String primaryCloudFileId = cloudStorageUploaderService.uploadPrimaryChunk(
+                primaryToken.getProviderName(),
+                primaryToken.getRefreshToken(),
+                sessionId,
+                chunkIndex,
+                filename,
+                encryptedBytes
+        );
+
+        // 4. Upload Replica Copy to volunteer cloud
+        String replicaCloudFileId = null;
+        if (replicaToken != null) {
+            replicaCloudFileId = cloudStorageUploaderService.uploadReplicaChunk(
+                    replicaToken.getProviderName(),
+                    replicaToken.getRefreshToken(),
+                    sessionId,
                     chunkIndex,
-                    chunkHash,
-                    cloudFileId,
-                    providerName
+                    filename,
+                    encryptedBytes
             );
-
-            rabbitTemplate.convertAndSend(
-                    RabbitMQConfig.CHUNK_HASH_EXCHANGE,
-                    RabbitMQConfig.CHUNK_HASH_ROUTING_KEY,
-                    hashMessage
-            );
-            log.info("[Muscle -> Brain] Dispatched ChunkHashMessage for chunk #{}", chunkIndex);
-        } catch (Exception e) {
-            log.error("Failed to send ChunkHashMessage to Brain: {}", e.getMessage(), e);
         }
+
+        Map<String, Object> response = new HashMap<>();
+        response.put("sessionId", sessionId);
+        response.put("chunkIndex", chunkIndex);
+        response.put("status", "SUCCESS");
+        response.put("primaryCloudFileId", primaryCloudFileId);
+        response.put("replicaCloudFileId", replicaCloudFileId);
+        response.put("sha256Hash", sha256Hash);
+
+        // Buffer the hash data in memory for synchronous retrieval by Core Engine
+        sessionHashBuffer.computeIfAbsent(sessionId, k -> new ArrayList<>()).add(response);
+
+        // --- STEP 5: Detect Last Chunk & Output Completion Banner ---
+        if (chunkIndex == maxChunkIndex) {
+            log.info("==========================================================================================");
+            log.info("✅ [FileChunkProcessor] ALL CHUNKS ({}/{}) UPLOADED & ANCHORED SUCCESSFULLY FOR SESSION: {}",
+                    chunkIndex + 1, maxChunkIndex + 1, sessionId);
+            log.info("==========================================================================================");
+        }
+
+        return response;
     }
 
-    private void executeSimulatedUpload(String sessionId, String filename, List<CloudProviderTokenDTO> tokens) {
-        log.info("[SIMULATION] Generating simulated chunks for demonstration.");
+    private List<CloudProviderTokenDTO> fetchTokensFromCoreEngine(String sessionId) {
         try {
-            byte[] mockData = ("Simulated Chunk Payload for " + filename).getBytes();
-            byte[] encrypted = encryptionService.encryptChunk(mockData);
-            String hash = encryptionService.calculateSha256Hash(encrypted);
-
-            CloudProviderTokenDTO primaryVolunteer = (tokens != null && !tokens.isEmpty()) ? tokens.get(0)
-                    : new CloudProviderTokenDTO("GOOGLE_DRIVE", "sim@drive.com", "mock_token");
-
-            dispatchHashToBrain(sessionId, 0, hash, "sim_file_001", primaryVolunteer.getProviderName());
-            log.info("[SIMULATION] Processed and dispatched simulated chunk | Hash: {}", hash);
+            String coreUrl = "http://localhost:8080/api/v1/transfers/" + sessionId + "/chunk-assignments";
+            ResponseEntity<List<CloudProviderTokenDTO>> response = restTemplate.exchange(
+                    coreUrl,
+                    HttpMethod.GET,
+                    null,
+                    new ParameterizedTypeReference<List<CloudProviderTokenDTO>>() {}
+            );
+            List<CloudProviderTokenDTO> fetchedTokens = response.getBody();
+            if (fetchedTokens != null) {
+                sessionTokenRegistry.put(sessionId, fetchedTokens);
+            }
+            return fetchedTokens;
         } catch (Exception e) {
-            log.error("Simulation error: {}", e.getMessage());
+            log.error("[FileChunkProcessor] Could not fetch tokens from Core Engine for session {}: {}", sessionId, e.getMessage());
+            return null;
         }
     }
 }

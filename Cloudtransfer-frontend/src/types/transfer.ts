@@ -1,60 +1,143 @@
-export interface FileMetadataItem {
+export interface FileAttachment {
   id: string;
   file: File;
   name: string;
-  sizeBytes: number;
-  extension: string;
+  size: number;
 }
 
-export interface UploadRequestDto {
+export interface StartTransferRequest {
   senderEmail: string;
   senderName: string;
-  recipients: string[];
-  subject?: string;
-  message?: string;
+  recipientEmails: string[];
+  subject: string;
+  message: string;
+  filename: string;
   totalSizeBytes: number;
-  files: {
-    filename: string;
-    fileSizeBytes: number;
-  }[];
+  expiryDays: number;
 }
 
-export interface SessionInitMessage {
+export interface StartTransferResponse {
+  id: string;
   sessionId: string;
-  encryptionKeyHash: string;
+  originalFilename?: string;
+  totalSizeBytes?: number;
   totalChunks: number;
-  chunkSize: number;
-  status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
+  chunkSizeBytes: number;
+  status: string;
+  expiryTimestamp: string;
+  merkleRoot?: string;
+  tokens?: any[];
 }
 
-export interface BlueprintResponseDto {
+export interface TransferManifest {
   sessionId: string;
   filename: string;
-  totalSize: number;
-  encryptionKeyHash: string;
-  chunks: ChunkAssignmentDto[];
+  originalFilename?: string;
+  totalSizeBytes: number;
+  totalChunks: number;
+  senderName?: string;
+  senderEmail?: string;
+  subject?: string;
+  message?: string;
+  status?: string;
+  createdAt?: string;
+  expiryTimestamp?: string;
+  merkleRoot?: string;
 }
 
-export interface ChunkAssignmentDto {
-  chunkIndex: number;
-  chunkHash: string;
-  provider: 'GOOGLE_DRIVE' | 'DROPBOX' | 'DECENTRALIZED_NODE';
-  downloadUrl: string;
-}
-
-export interface SystemStatsDto {
-  activeSessions: number;
-  totalTransferredBytes: number;
-  activeContributors: number;
-  storageNodesCount: number;
-}
-
-export interface Contributor {
-  id: string;
+export interface ContributorRegistration {
   name: string;
   email: string;
-  nodeAddress: string;
-  storageAllocatedGB: number;
-  status: 'ACTIVE' | 'PENDING' | 'SUSPENDED';
-  reputationScore: number;
+  password?: string;
+  cloudProvider: 'GOOGLE_DRIVE' | 'DROPBOX';
+  pledgedStorageBytes: number;
+  refreshToken?: string;
+}
+
+export interface ContributorNode {
+  id: string;
+  name?: string;
+  email?: string;
+  cloudProvider: string;
+  pledgedStorageBytes: number;
+  usedStorageBytes: number;
+  refreshToken?: string;
+  status: string;
+  tamperFlags?: number;
+  createdAt?: string;
+}
+
+export interface ContributorDashboard {
+  id?: string;
+  name: string;
+  email: string;
+  cloudProvider?: string;
+  pledgedStorageBytes: number;
+  usedStorageBytes: number;
+  status: string;
+  tamperFlags?: number;
+  createdAt?: string;
+  googleDriveNode?: ContributorNode | null;
+  dropboxNode?: ContributorNode | null;
+  nodes?: ContributorNode[];
+}
+
+export interface ContributorLoginRequest {
+  email: string;
+  password: string;
+}
+
+export interface AdminTelemetry {
+  activeContributors: number;
+  totalCapacityBytes: number;
+  consumedStorageBytes: number;
+  activeTransfersCount: number;
+  activeAlertsCount: number;
+}
+
+export interface AdminChunkDetail {
+  id: string;
+  chunkIndex: number;
+  chunkSizeBytes: number;
+  sha256Hash: string;
+  status: string;
+  primaryContributorId?: string;
+  primaryContributorEmail: string;
+  primaryProvider: string;
+  replicaContributorId?: string;
+  replicaContributorEmail: string;
+  replicaProvider: string;
+}
+
+export interface AdminTransferSession {
+  id: string;
+  senderEmail: string;
+  senderName: string;
+  subject: string;
+  message: string;
+  originalFilename: string;
+  totalSizeBytes: number;
+  totalChunks: number;
+  expiryDays: number;
+  createdAt: string;
+  expiryTimestamp: string;
+  status: string;
+  merkleRoot: string;
+  recipientEmails: string[];
+  chunks: AdminChunkDetail[];
+  blockchainStatus: 'ANCHORED' | 'ON_CHAIN_MISMATCH';
+}
+
+export interface TamperAlert {
+  alertId: string;
+  sessionId?: string;
+  chunkIndex?: number;
+  contributorId: string;
+  contributorEmail: string;
+  cloudProvider: string;
+  tamperType: string;
+  tamperFlags?: number;
+  timestamp: string;
+  scheduledTerminationAt?: string;
+  status: string;
 }

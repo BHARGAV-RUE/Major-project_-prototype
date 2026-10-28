@@ -1,180 +1,271 @@
 package com.cloudtransfer.core.service;
 
 import jakarta.annotation.PostConstruct;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
+import okhttp3.OkHttpClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.web3j.abi.FunctionEncoder;
 import org.web3j.abi.FunctionReturnDecoder;
+import org.web3j.abi.TypeReference;
 import org.web3j.abi.datatypes.Function;
 import org.web3j.abi.datatypes.Type;
 import org.web3j.abi.datatypes.Utf8String;
 import org.web3j.crypto.Credentials;
 import org.web3j.protocol.Web3j;
-import org.web3j.protocol.core.methods.response.TransactionReceipt;
+import org.web3j.protocol.core.DefaultBlockParameterName;
+import org.web3j.protocol.core.methods.request.Transaction;
+import org.web3j.protocol.core.methods.response.EthCall;
+import org.web3j.protocol.core.methods.response.EthSendTransaction;
 import org.web3j.protocol.http.HttpService;
 import org.web3j.tx.RawTransactionManager;
 import org.web3j.tx.TransactionManager;
-import org.web3j.tx.gas.DefaultGasProvider;
 
 import java.math.BigInteger;
+import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
-import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 
 @Service
+@Slf4j
 public class BlockchainService {
 
-    private static final Logger logger = LoggerFactory.getLogger(BlockchainService.class);
+    public enum OnChainResult {
+        VERIFIED,
+        MISMATCH,
+        UNAVAILABLE
+    }
 
-    // This is the compiled bytecode of your FileIntegrityLedger.sol contract
-    private static final String CONTRACT_BYTECODE = "608060405234801561001057600080fd5b50610360806100206000396000f3fe608060405234801561001057600080fd5b50600436106100365760003560e01c80631f4e1bc21461003b57806385d8fbbf1461008d575b600080fd5b6100776004803603602081101561005157600080fd5b35600401356020810135600080fd5b6100b0565b604051610084929190610220565b60405180910390f35b6100ae600480360360408110156100a357600080fd5b610120565b005b";
+    @Value("${web3.rpc-url:https://polygon-amoy.drpc.org}")
+    private String primaryRpcUrl;
 
-    @Value("${blockchain.rpc.url}")
-    private String rpcUrl;
+    @Value("${web3.rpc-fallback-urls:https://rpc.ankr.com/polygon_amoy,https://polygon-amoy-bor-rpc.publicnode.com,https://80002.rpc.thirdweb.com}")
+    private String fallbackRpcUrls;
 
-    @Value("${blockchain.wallet.private.key}")
+    @Value("${web3.private-key:${blockchain.wallet.private.key:}}")
     private String privateKey;
 
-    @Value("${blockchain.contract.address:0x0000000000000000000000000000000000000000}")
+    @Value("${web3.contract-address:${blockchain.contract.address:}}")
     private String contractAddress;
 
+    private static final long AMOY_CHAIN_ID = 80002L;
+    private static final String BROKEN_RPC_HOST = "rpc-amoy.polygon.technology";
+    private static final BigInteger MIN_GAS_PRICE = BigInteger.valueOf(30_000_000_000L); // 30 Gwei
+    private static final BigInteger DEFAULT_GAS_LIMIT = BigInteger.valueOf(500_000L);
+
+    private final List<String> rpcEndpoints = new ArrayList<>();
+    private OkHttpClient okHttpClient;
+
     @PostConstruct
-    public void autoDeployContractIfNeeded() {
-        if ("0x0000000000000000000000000000000000000000".equals(contractAddress)) {
-            logger.info("No contract address found. Auto-deploying FileIntegrityLedger.sol to Polygon Amoy...");
+    public void init() {
+        this.okHttpClient = new OkHttpClient.Builder()
+                .connectTimeout(3, TimeUnit.SECONDS)
+                .readTimeout(5, TimeUnit.SECONDS)
+                .writeTimeout(5, TimeUnit.SECONDS)
+                .build();
 
-            // List of public Polygon Amoy RPC nodes for automatic failover
-            List<String> rpcEndpoints = Arrays.asList(
-                    rpcUrl, // Primary from application.properties
-                    "https://polygon-amoy-bor-rpc.publicnode.com",
-                    "https://polygon-amoy.gateway.tenderly.co",
-                    "https://poly-amoy-testnet.api.pocket.network"
-            );
+        addRpcEndpoint(primaryRpcUrl);
 
-            for (String activeRpc : rpcEndpoints) {
-                try {
-                    logger.info("[Blockchain] Connecting via RPC endpoint: {}", activeRpc);
-                    Web3j web3j = Web3j.build(new HttpService(activeRpc));
-                    Credentials credentials = Credentials.create(privateKey);
+        if (fallbackRpcUrls != null && !fallbackRpcUrls.isBlank()) {
+            Arrays.stream(fallbackRpcUrls.split(","))
+                    .map(String::trim)
+                    .forEach(this::addRpcEndpoint);
+        }
 
-                    BigInteger nonce = web3j.ethGetTransactionCount(credentials.getAddress(), org.web3j.protocol.core.DefaultBlockParameterName.LATEST).send().getTransactionCount();
-                    BigInteger gasPrice = web3j.ethGasPrice().send().getGasPrice();
-                    BigInteger gasLimit = BigInteger.valueOf(200_000);
+        if (privateKey == null || privateKey.isBlank() || contractAddress == null || contractAddress.isBlank()) {
+            log.warn("[Blockchain] Web3 configuration missing. On-chain anchoring disabled.");
+            return;
+        }
 
-                    logger.info("[Blockchain] Wallet: {} | Nonce: {} | Gas Price: {} wei", credentials.getAddress(), nonce, gasPrice);
+        try {
+            Credentials credentials = Credentials.create(privateKey);
+            log.info("[Blockchain] Enabled. Wallet: {} | Contract: {} | Active RPC Pool: {}",
+                    credentials.getAddress(), contractAddress, rpcEndpoints);
+        } catch (Exception e) {
+            log.error("[Blockchain] Invalid Web3 private key provided: {}", e.getMessage());
+        }
+    }
 
-                    org.web3j.crypto.RawTransaction rawTx = org.web3j.crypto.RawTransaction.createContractTransaction(
-                            nonce, gasPrice, gasLimit, BigInteger.ZERO, CONTRACT_BYTECODE
-                    );
+    private void addRpcEndpoint(String url) {
+        if (url == null || url.isBlank()) return;
+        String cleanUrl = url.trim();
+        if (cleanUrl.contains(BROKEN_RPC_HOST)) {
+            log.warn("[Blockchain] Skipping deprecated/unreliable RPC endpoint: {}", cleanUrl);
+            return;
+        }
+        if (!rpcEndpoints.contains(cleanUrl)) {
+            rpcEndpoints.add(cleanUrl);
+        }
+    }
 
-                    byte[] signedMessage = org.web3j.crypto.TransactionEncoder.signMessage(rawTx, 80002L, credentials);
-                    String hexValue = org.web3j.utils.Numeric.toHexString(signedMessage);
+    /**
+     * Primary anchoring method used by MerkleTreeService
+     */
+    public String anchorRootToBlockchain(String sessionId, String merkleRoot) {
+        if (rpcEndpoints.isEmpty() || privateKey == null || privateKey.isBlank()) {
+            log.warn("[Blockchain] On-chain anchoring skipped: missing Web3 credentials or valid RPC endpoints.");
+            return null;
+        }
 
-                    org.web3j.protocol.core.methods.response.EthSendTransaction ethSendTx = web3j.ethSendRawTransaction(hexValue).send();
+        Credentials credentials;
+        try {
+            credentials = Credentials.create(privateKey);
+        } catch (Exception e) {
+            log.error("[Blockchain] Cannot anchor: Invalid private key.");
+            return null;
+        }
 
-                    if (ethSendTx.hasError()) {
-                        logger.warn("[Blockchain] RPC {} returned error: {}. Trying next endpoint...", activeRpc, ethSendTx.getError().getMessage());
-                        continue;
-                    }
+        for (String rpcUrl : rpcEndpoints) {
+            Web3j web3j = null;
+            try {
+                log.info("[Blockchain] Connecting to RPC: {} for session {}", rpcUrl, sessionId);
 
-                    String txHash = ethSendTx.getTransactionHash();
-                    logger.info("[Blockchain] Deployment transaction sent! Tx Hash: {}", txHash);
-                    logger.info("[Blockchain] Waiting for Polygon Amoy to confirm the block...");
+                HttpService httpService = new HttpService(rpcUrl, okHttpClient, false);
+                web3j = Web3j.build(httpService);
 
-                    for (int i = 0; i < 20; i++) {
-                        Thread.sleep(3000);
-                        Optional<TransactionReceipt> receipt = web3j.ethGetTransactionReceipt(txHash).send().getTransactionReceipt();
-                        if (receipt.isPresent()) {
-                            this.contractAddress = receipt.get().getContractAddress();
-                            logger.info("==================================================");
-                            logger.info("SUCCESS! Contract Deployed Directly via Java!");
-                            logger.info("Deployed Contract Address: {}", contractAddress);
-                            logger.info("View on Polygon scan: https://amoy.polygonscan.com/address/{}", contractAddress);
-                            logger.info("==================================================");
-                            return;
-                        }
-                    }
-                } catch (Exception e) {
-                    logger.warn("[Blockchain] Endpoint {} failed: {}. Retrying on backup RPC...", activeRpc, e.getMessage());
+                BigInteger blockNumber = web3j.ethBlockNumber().send().getBlockNumber();
+                log.info("[Blockchain] Connected to RPC: {} (Latest Block: {})", rpcUrl, blockNumber);
+
+                TransactionManager txManager = new RawTransactionManager(web3j, credentials, AMOY_CHAIN_ID);
+
+                String txHash = executeContractAnchor(web3j, txManager, sessionId, merkleRoot);
+
+                log.info("[Blockchain] Successfully anchored session {} to Polygon Amoy! Tx Hash: {}", sessionId, txHash);
+                return txHash;
+
+            } catch (Exception e) {
+                log.warn("[Blockchain] RPC endpoint {} failed for session {}: {}", rpcUrl, sessionId, e.getMessage());
+            } finally {
+                if (web3j != null) {
+                    try {
+                        web3j.shutdown();
+                    } catch (Exception ignored) {}
                 }
             }
-            logger.error("[Blockchain] All RPC endpoints failed. Please check internet connection.");
-        } else {
-            logger.info("Using existing deployed smart contract at: {}", contractAddress);
         }
+
+        log.error("[Blockchain] All RPC endpoints in failover pool failed for session {}.", sessionId);
+        return null;
     }
 
-    public void anchorRootToBlockchain(String sessionId, String merkleRoot) {
-        try {
-            logger.info("Initiating blockchain anchoring for Session: {}", sessionId);
-
-            Web3j web3j = Web3j.build(new HttpService(rpcUrl));
-            Credentials credentials = Credentials.create(privateKey);
-
-            Function function = new Function(
-                    "anchorFileRoot",
-                    Arrays.asList(new Utf8String(sessionId), new Utf8String(merkleRoot)),
-                    Collections.emptyList()
-            );
-            String encodedFunction = FunctionEncoder.encode(function);
-
-            TransactionManager txManager = new RawTransactionManager(web3j, credentials, 80002);
-
-            logger.info("Sending transaction to Polygon Amoy...");
-            String txHash = txManager.sendTransaction(
-                    DefaultGasProvider.GAS_PRICE,
-                    DefaultGasProvider.GAS_LIMIT,
-                    contractAddress,
-                    encodedFunction,
-                    BigInteger.ZERO
-            ).getTransactionHash();
-
-            logger.info("SUCCESS! Merkle Root anchored. Transaction Hash: {}", txHash);
-
-        } catch (Exception e) {
-            logger.warn("Blockchain anchoring skipped (Expected with dummy credentials). Error: {}", e.getMessage());
-        }
+    /**
+     * Alias anchoring method used by TransferService
+     */
+    public String anchorMerkleRoot(String sessionId, String merkleRoot) {
+        return anchorRootToBlockchain(sessionId, merkleRoot);
     }
 
+    /**
+     * Used by AuditController (returns boolean)
+     */
     public boolean verifyIntegrityOnChain(String sessionId, String recomputedRoot) {
-        try {
-            logger.info("Verifying file integrity on-chain for Session: {}", sessionId);
+        OnChainResult result = checkRootOnChain(sessionId, recomputedRoot);
+        return result == OnChainResult.VERIFIED;
+    }
 
-            Web3j web3j = Web3j.build(new HttpService(rpcUrl));
-
-            Function function = new Function(
-                    "verifyFileRoot",
-                    Arrays.asList(new Utf8String(sessionId), new Utf8String(recomputedRoot)),
-                    Collections.singletonList(new org.web3j.abi.TypeReference<org.web3j.abi.datatypes.Bool>() {})
-            );
-
-            String encodedFunction = FunctionEncoder.encode(function);
-
-            org.web3j.protocol.core.methods.request.Transaction transaction =
-                    org.web3j.protocol.core.methods.request.Transaction.createEthCallTransaction(
-                            null, contractAddress, encodedFunction
-                    );
-
-            String response = web3j.ethCall(transaction, org.web3j.protocol.core.DefaultBlockParameterName.LATEST)
-                    .send()
-                    .getValue();
-
-            List<Type> results = FunctionReturnDecoder.decode(
-                    response, function.getOutputParameters()
-            );
-
-            if (!results.isEmpty()) {
-                boolean isValid = (Boolean) results.get(0).getValue();
-                logger.info("Verification result for Session {}: {}", sessionId, isValid ? "AUTHENTIC" : "TAMPERED/INVALID");
-                return isValid;
-            }
-
-        } catch (Exception e) {
-            logger.warn("Verification query skipped (using dummy config). Error: {}", e.getMessage());
+    /**
+     * Used by DownloadIntegrityService (returns OnChainResult enum)
+     */
+    public OnChainResult checkRootOnChain(String sessionId, String recomputedMerkleRoot) {
+        if (rpcEndpoints.isEmpty() || contractAddress == null || contractAddress.isBlank()) {
+            return OnChainResult.UNAVAILABLE;
         }
-        return false;
+
+        for (String rpcUrl : rpcEndpoints) {
+            Web3j web3j = null;
+            try {
+                HttpService httpService = new HttpService(rpcUrl, okHttpClient, false);
+                web3j = Web3j.build(httpService);
+
+                // Matches Solidity method: getMerkleRoot(string)
+                Function function = new Function(
+                        "getMerkleRoot",
+                        List.of(new Utf8String(sessionId)),
+                        List.of(new TypeReference<Utf8String>() {})
+                );
+
+                String encodedFunction = FunctionEncoder.encode(function);
+
+                Transaction ethCallTransaction = Transaction.createEthCallTransaction(null, contractAddress, encodedFunction);
+                EthCall response = web3j.ethCall(ethCallTransaction, DefaultBlockParameterName.LATEST).send();
+
+                if (response.hasError() || response.getValue() == null) {
+                    continue;
+                }
+
+                List<Type> decoded = FunctionReturnDecoder.decode(response.getValue(), function.getOutputParameters());
+                if (decoded.isEmpty()) {
+                    continue;
+                }
+
+                String onChainRoot = (String) decoded.get(0).getValue();
+                if (onChainRoot == null || onChainRoot.isBlank()) {
+                    return OnChainResult.UNAVAILABLE;
+                }
+
+                if (onChainRoot.trim().equalsIgnoreCase(recomputedMerkleRoot.trim())) {
+                    return OnChainResult.VERIFIED;
+                } else {
+                    return OnChainResult.MISMATCH;
+                }
+
+            } catch (Exception e) {
+                log.warn("[Blockchain] Could not query RPC {} for root check: {}", rpcUrl, e.getMessage());
+            } finally {
+                if (web3j != null) {
+                    try {
+                        web3j.shutdown();
+                    } catch (Exception ignored) {}
+                }
+            }
+        }
+
+        return OnChainResult.UNAVAILABLE;
+    }
+
+    private String executeContractAnchor(Web3j web3j, TransactionManager txManager, String sessionId, String merkleRoot) throws Exception {
+        BigInteger gasPrice;
+        try {
+            gasPrice = web3j.ethGasPrice().send().getGasPrice();
+            if (gasPrice == null || gasPrice.compareTo(MIN_GAS_PRICE) < 0) {
+                gasPrice = MIN_GAS_PRICE;
+            }
+        } catch (Exception e) {
+            gasPrice = MIN_GAS_PRICE;
+        }
+
+        log.info("[Blockchain] Executing anchorFileRoot with Gas Price: {} Gwei", gasPrice.divide(BigInteger.valueOf(1_000_000_000L)));
+
+        // Matches Solidity method: anchorFileRoot(string,string)
+        Function function = new Function(
+                "anchorFileRoot",
+                Arrays.asList(
+                        new Utf8String(sessionId),
+                        new Utf8String(merkleRoot)
+                ),
+                List.of()
+        );
+
+        String encodedFunction = FunctionEncoder.encode(function);
+
+        EthSendTransaction ethSendTransaction = txManager.sendTransaction(
+                gasPrice,
+                DEFAULT_GAS_LIMIT,
+                contractAddress,
+                encodedFunction,
+                BigInteger.ZERO
+        );
+
+        if (ethSendTransaction.hasError()) {
+            throw new RuntimeException("EVM Transaction failed: " + ethSendTransaction.getError().getMessage());
+        }
+
+        String txHash = ethSendTransaction.getTransactionHash();
+        if (txHash == null || txHash.isBlank()) {
+            throw new RuntimeException("EVM Transaction returned null transaction hash.");
+        }
+
+        return txHash;
     }
 }

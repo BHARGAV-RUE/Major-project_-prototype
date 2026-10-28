@@ -1,66 +1,148 @@
 package com.cloudtransfer.core.controller;
 
-import com.cloudtransfer.core.dto.BlueprintResponseDto;
+import com.cloudtransfer.core.dto.ChunkAssignmentDto;
 import com.cloudtransfer.core.dto.CloudProviderTokenDTO;
-import com.cloudtransfer.core.dto.UploadRequestDto;
-import com.cloudtransfer.core.messaging.FileProducerService;
-import com.cloudtransfer.core.service.DistributionService;
+import com.cloudtransfer.core.dto.StartTransferRequest;
+import com.cloudtransfer.core.entity.Contributor;
+import com.cloudtransfer.core.entity.FileChunk;
+import com.cloudtransfer.core.entity.TransferSession;
+import com.cloudtransfer.core.repository.ContributorRepository;
+import com.cloudtransfer.core.repository.FileChunkRepository;
+import com.cloudtransfer.core.service.TransferService;
+import com.cloudtransfer.core.service.TransferService.Blueprint;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/v1/transfers")
+@Slf4j
 @RequiredArgsConstructor
 public class TransferController {
 
-    private final DistributionService distributionService;
-    private final FileProducerService fileProducerService;
-
-    @PostMapping("/blueprint")
-    public ResponseEntity<?> requestUploadBlueprint(@RequestBody UploadRequestDto request) {
-        try {
-            BlueprintResponseDto blueprint = distributionService.createBlueprint(
-                    request.getSenderEmail(),
-                    request.getFilename(),
-                    request.getTotalSizeBytes(),
-                    request.getExpiryDays() != null ? request.getExpiryDays() : 5
-            );
-            return ResponseEntity.ok(blueprint);
-        } catch (IllegalStateException e) {
-            // Return custom capacity error message directly to user/frontend
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(e.getMessage());
-        }
-    }
+    private final TransferService transferService;
+    private final FileChunkRepository fileChunkRepository;
+    private final ContributorRepository contributorRepository;
 
     @PostMapping("/start")
-    public ResponseEntity<?> startDynamicTransfer(@RequestBody UploadRequestDto request) {
-        try {
-            // 1. Create session blueprint & enforce volunteer capacity checks
-            BlueprintResponseDto blueprint = distributionService.createBlueprint(
-                    request.getSenderEmail(),
-                    request.getFilename(),
-                    request.getTotalSizeBytes(),
-                    request.getExpiryDays() != null ? request.getExpiryDays() : 5
-            );
+    public ResponseEntity<?> startTransfer(@RequestBody StartTransferRequest request) {
+        log.info("[TransferController] Initiating start transfer for sender: {}", request.getSenderEmail());
+        TransferSession session = transferService.startTransfer(request);
+        Blueprint blueprint = transferService.calculateBlueprint(request.getTotalSizeBytes());
 
-            // 2. Retrieve tokens for active contributors
-            List<CloudProviderTokenDTO> tokens = distributionService.getAvailableVolunteerTokens();
+        return ResponseEntity.ok(Map.of(
+                "id", session.getId(),
+                "sessionId", session.getId(),
+                "status", session.getStatus(),
+                "totalChunks", session.getTotalChunks(),
+                "chunkSizeBytes", blueprint.chunkSizeBytes(),
+                "expiryTimestamp", session.getExpiryTimestamp().toString()
+        ));
+    }
 
-            // 3. Command Muscle over RabbitMQ to start processing file
-            fileProducerService.sendFileForProcessing(
-                    blueprint.getSessionId().toString(),
-                    request.getFilename(),
-                    request.getFilePath(),
-                    tokens
-            );
+    @GetMapping("/{sessionId}/chunk-assignments")
+    public ResponseEntity<List<CloudProviderTokenDTO>> getChunkAssignments(@PathVariable UUID sessionId) {
+        List<FileChunk> chunks = fileChunkRepository.findBySession_IdOrderByChunkIndexAsc(sessionId);
+        List<CloudProviderTokenDTO> tokens = transferService.generateChunkAssignments(sessionId, chunks.size());
+        return ResponseEntity.ok(tokens);
+    }
 
-            return ResponseEntity.ok("Transfer session " + blueprint.getSessionId() + " initialized for file: " + request.getFilename());
-        } catch (IllegalStateException e) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(e.getMessage());
+    @GetMapping("/{sessionId}/chunk-assignment")
+    public ResponseEntity<?> getChunkAssignment(
+            @PathVariable UUID sessionId,
+            @RequestParam(value = "chunkIndex", defaultValue = "0") Integer chunkIndex) {
+
+        List<FileChunk> chunks = fileChunkRepository.findBySession_IdOrderByChunkIndexAsc(sessionId);
+
+        FileChunk chunk = chunks.stream()
+                .filter(c -> c.getChunkIndex().equals(chunkIndex))
+                .findFirst()
+                .orElse(null);
+
+        if (chunk == null) {
+            return ResponseEntity.notFound().build();
         }
+
+        ChunkAssignmentDto dto = new ChunkAssignmentDto();
+        dto.setChunkIndex(chunkIndex);
+
+        if (chunk.getPrimaryContributor() != null) {
+            UUID primaryId = chunk.getPrimaryContributor().getId();
+            if (primaryId != null) {
+                dto.setPrimaryContributorId(primaryId);
+            }
+            dto.setPrimaryProvider(chunk.getPrimaryContributor().getCloudProvider());
+            dto.setPrimaryRefreshToken(chunk.getPrimaryContributor().getRefreshToken());
+        }
+
+        if (chunk.getReplicaContributor() != null) {
+            UUID replicaId = chunk.getReplicaContributor().getId();
+            if (replicaId != null) {
+                dto.setReplicaContributorId(replicaId);
+            }
+            dto.setReplicaProvider(chunk.getReplicaContributor().getCloudProvider());
+            dto.setReplicaRefreshToken(chunk.getReplicaContributor().getRefreshToken());
+        }
+
+        return ResponseEntity.ok(dto);
+    }
+
+    @PostMapping("/{sessionId}/complete")
+    public ResponseEntity<?> completeTransfer(@PathVariable UUID sessionId) {
+        log.info("[TransferController] Executing synchronous complete transfer for session {}", sessionId);
+        TransferSession session = transferService.completeTransfer(sessionId);
+        return ResponseEntity.ok(Map.of(
+                "sessionId", session.getId(),
+                "status", session.getStatus(),
+                "merkleRoot", session.getMerkleRoot() != null ? session.getMerkleRoot() : ""
+        ));
+    }
+
+    // --- RECEIVES TAMPERED / MISSING CHUNK NOTIFICATION FROM STREAM ENGINE ---
+    @PostMapping("/{sessionId}/chunks/{chunkIndex}/tampered")
+    public ResponseEntity<?> reportTamperedChunk(
+            @PathVariable UUID sessionId,
+            @PathVariable Integer chunkIndex) {
+
+        log.warn("[TamperDetection] Received missing/tampered chunk report for Session: {}, Chunk Index: {}", sessionId, chunkIndex);
+
+        List<FileChunk> chunks = fileChunkRepository.findBySession_IdOrderByChunkIndexAsc(sessionId);
+
+        Optional<FileChunk> chunkOpt = chunks.stream()
+                .filter(c -> c.getChunkIndex().equals(chunkIndex))
+                .findFirst();
+
+        if (chunkOpt.isPresent()) {
+            FileChunk chunk = chunkOpt.get();
+            chunk.setStatus("MISSING");
+            fileChunkRepository.save(chunk);
+
+            // Increment tamper warning flags on the primary contributor node
+            if (chunk.getPrimaryContributor() != null) {
+                Contributor primary = chunk.getPrimaryContributor();
+                int currentFlags = (primary.getTamperFlags() != null ? primary.getTamperFlags() : 0) + 1;
+                primary.setTamperFlags(currentFlags);
+                contributorRepository.save(primary);
+
+                log.info("[TamperDetection] Incremented tamper warning flags for primary contributor node {}: Total Flags = {}",
+                        primary.getEmail(), currentFlags);
+            }
+
+            return ResponseEntity.ok(Map.of(
+                    "status", "TAMPER_FLAGGED",
+                    "sessionId", sessionId,
+                    "chunkIndex", chunkIndex
+            ));
+        }
+
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of("error", "Chunk not found for session " + sessionId));
     }
 }

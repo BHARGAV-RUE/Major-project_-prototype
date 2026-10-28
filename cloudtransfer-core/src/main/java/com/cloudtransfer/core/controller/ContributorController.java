@@ -1,59 +1,78 @@
 package com.cloudtransfer.core.controller;
 
 import com.cloudtransfer.core.entity.Contributor;
+import com.cloudtransfer.core.event.EmailEvent;
 import com.cloudtransfer.core.repository.ContributorRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.*;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.client.RestTemplate;
 
+import java.net.URI;
+import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 @RestController
 @RequestMapping("/api/v1/contributors")
+@Slf4j
 @RequiredArgsConstructor
 public class ContributorController {
 
     private final ContributorRepository contributorRepository;
+    private final ApplicationEventPublisher eventPublisher;
     private final RestTemplate restTemplate = new RestTemplate();
 
-    @Value("${google.oauth.client-id}")
+    @Value("${google.oauth.client-id:}")
     private String clientId;
 
-    @Value("${google.oauth.client-secret}")
+    @Value("${google.oauth.client-secret:}")
     private String clientSecret;
 
-    @Value("${google.oauth.redirect-uri}")
+    @Value("${google.oauth.redirect-uri:}")
     private String redirectUri;
 
-    /**
-     * 1. Generates the Google Login URL for the frontend.
-     * The user clicks this link to grant access to their Google Drive.
-     */
+    @Value("${dropbox.oauth.client-id:}")
+    private String dropboxClientId;
+
+    @Value("${dropbox.oauth.client-secret:}")
+    private String dropboxClientSecret;
+
+    @Value("${dropbox.oauth.redirect-uri:}")
+    private String dropboxRedirectUri;
+
+    @Value("${app.frontend.base-url:http://localhost:5173}")
+    private String frontendBaseUrl;
+
+    // --- GOOGLE OAUTH AUTH URL ---
     @GetMapping("/oauth/google/url")
-    public ResponseEntity<String> getGoogleAuthUrl() {
+    public ResponseEntity<String> getGoogleAuthUrl(@RequestParam(value = "email", required = false) String email) {
+        String stateParam = (email != null && !email.isBlank()) ? email.trim() : "unknown";
+
         String authUrl = "https://accounts.google.com/o/oauth2/v2/auth?" +
                 "client_id=" + clientId +
                 "&redirect_uri=" + redirectUri +
                 "&response_type=code" +
                 "&scope=https://www.googleapis.com/auth/drive.file" +
                 "&access_type=offline" +
-                "&prompt=consent"; // Forces prompt to ensure we get a refresh_token
+                "&prompt=consent" +
+                "&state=" + stateParam;
 
         return ResponseEntity.ok(authUrl);
     }
 
-    /**
-     * 2. Google redirects the user back here with an Authorization Code.
-     * We exchange this code for a Refresh Token and save it to the DB.
-     */
+    // --- GOOGLE OAUTH CALLBACK ---
     @GetMapping("/oauth/google/callback")
-    public ResponseEntity<String> handleGoogleCallback(@RequestParam("code") String code) {
+    public ResponseEntity<Void> handleGoogleCallback(
+            @RequestParam("code") String code,
+            @RequestParam(value = "state", required = false) String state) {
 
-        // Prepare the token exchange request
         String tokenEndpoint = "https://oauth2.googleapis.com/token";
 
         MultiValueMap<String, String> requestBody = new LinkedMultiValueMap<>();
@@ -68,66 +87,95 @@ public class ContributorController {
         HttpEntity<MultiValueMap<String, String>> request = new HttpEntity<>(requestBody, headers);
 
         try {
-            // Send request to Google
             ResponseEntity<Map> response = restTemplate.postForEntity(tokenEndpoint, request, Map.class);
             Map<String, Object> responseBody = response.getBody();
 
             if (responseBody != null && responseBody.containsKey("refresh_token")) {
                 String refreshToken = (String) responseBody.get("refresh_token");
+                String userEmail = (state != null && !state.isBlank() && !state.equals("unknown")) ? state : "contributor_" + System.currentTimeMillis() + "@example.com";
 
-                // Save the new contributor to the database
-                Contributor contributor = Contributor.builder()
-                        .email("contributor_" + System.currentTimeMillis() + "@example.com") // In production, fetch from Google Profile API
-                        .cloudProvider("GOOGLE_DRIVE")
-                        .refreshToken(refreshToken)
-                        .maxStorageQuotaBytes(5L * 1024 * 1024 * 1024) // Default to 5 GB donation
-                        .status("ACTIVE")
-                        .build();
+                Optional<Contributor> existingNode = contributorRepository.findByEmailAndCloudProvider(userEmail, "GOOGLE_DRIVE");
+                List<Contributor> existingUserNodes = contributorRepository.findAllByEmail(userEmail);
+                String existingPassword = !existingUserNodes.isEmpty() ? existingUserNodes.get(0).getPassword() : null;
 
-                contributorRepository.save(contributor);
+                Contributor contributor;
+                boolean shouldSendWelcomeEmail = false;
 
-                return ResponseEntity.ok("SUCCESS! Your Google Drive is now connected. Refresh Token saved to Database.");
+                if (existingNode.isPresent()) {
+                    contributor = existingNode.get();
+                    contributor.setRefreshToken(refreshToken);
+                    if (existingPassword != null) contributor.setPassword(existingPassword);
+                    if ("PENDING_OAUTH".equalsIgnoreCase(contributor.getStatus()) || contributor.getStatus() == null) {
+                        contributor.setStatus("INACTIVE");
+                        contributor.setAutoActivateAt(LocalDateTime.now().plusDays(4));
+                        shouldSendWelcomeEmail = true;
+                    }
+                    log.info("[OAuthCallback] OAuth completed and Google Drive node updated for {}", userEmail);
+                } else {
+                    contributor = Contributor.builder()
+                            .name(userEmail)
+                            .email(userEmail)
+                            .cloudProvider("GOOGLE_DRIVE")
+                            .refreshToken(refreshToken)
+                            .password(existingPassword)
+                            .pledgedStorageBytes(5L * 1024 * 1024 * 1024)
+                            .status("INACTIVE")
+                            .tamperFlags(0)
+                            .createdAt(LocalDateTime.now())
+                            .autoActivateAt(LocalDateTime.now().plusDays(4))
+                            .build();
+                    shouldSendWelcomeEmail = true;
+                    log.info("[OAuthCallback] OAuth completed and new Google Drive node created for {}", userEmail);
+                }
+
+                Contributor saved = contributorRepository.save(contributor);
+
+                if (shouldSendWelcomeEmail) {
+                    eventPublisher.publishEvent(EmailEvent.builder()
+                            .source(this)
+                            .eventType(EmailEvent.EventType.CONTRIBUTOR_REGISTERED)
+                            .recipientEmail(saved.getEmail())
+                            .recipientName(saved.getName() != null ? saved.getName() : saved.getEmail())
+                            .cloudProvider(saved.getCloudProvider())
+                            .pledgedBytes(saved.getPledgedStorageBytes())
+                            .build());
+                }
+
+                String redirectUrl = frontendBaseUrl + "/contributor/register?status=success&provider=Google%20Drive";
+                return ResponseEntity.status(HttpStatus.FOUND).location(URI.create(redirectUrl)).build();
             } else {
-                return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                        .body("Failed to retrieve refresh token. You might have already granted access without prompting consent.");
+                String redirectUrl = frontendBaseUrl + "/contributor/register?status=error&message=Failed%20to%20retrieve%20Google%20refresh%20token";
+                return ResponseEntity.status(HttpStatus.FOUND).location(URI.create(redirectUrl)).build();
             }
 
         } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("OAuth Exchange Failed: " + e.getMessage());
+            log.error("[OAuthCallback] Google callback error: {}", e.getMessage(), e);
+            String redirectUrl = frontendBaseUrl + "/contributor/register?status=error&message=" + e.getMessage();
+            return ResponseEntity.status(HttpStatus.FOUND).location(URI.create(redirectUrl)).build();
         }
     }
 
-    // --- DROPBOX OAUTH FIELDS ---
-    @Value("${dropbox.oauth.client-id}")
-    private String dropboxClientId;
-
-    @Value("${dropbox.oauth.client-secret}")
-    private String dropboxClientSecret;
-
-    @Value("${dropbox.oauth.redirect-uri}")
-    private String dropboxRedirectUri;
-
-    /**
-     * 3. Generates the Dropbox Login URL
-     */
+    // --- DROPBOX OAUTH AUTH URL ---
     @GetMapping("/oauth/dropbox/url")
-    public ResponseEntity<String> getDropboxAuthUrl() {
+    public ResponseEntity<String> getDropboxAuthUrl(@RequestParam(value = "email", required = false) String email) {
+        String stateParam = (email != null && !email.isBlank()) ? email.trim() : "unknown";
+
         String authUrl = "https://www.dropbox.com/oauth2/authorize?" +
                 "client_id=" + dropboxClientId +
                 "&redirect_uri=" + dropboxRedirectUri +
                 "&response_type=code" +
                 "&token_access_type=offline" +
-                "&scope=files.content.read%20files.content.write";
+                "&scope=files.content.read%20files.content.write" +
+                "&state=" + stateParam;
 
         return ResponseEntity.ok(authUrl);
     }
 
-    /**
-     * 4. Dropbox Callback Handler
-     */
+    // --- DROPBOX OAUTH CALLBACK ---
     @GetMapping("/oauth/dropbox/callback")
-    public ResponseEntity<String> handleDropboxCallback(@RequestParam("code") String code) {
+    public ResponseEntity<Void> handleDropboxCallback(
+            @RequestParam("code") String code,
+            @RequestParam(value = "state", required = false) String state) {
 
         String tokenEndpoint = "https://api.dropboxapi.com/oauth2/token";
 
@@ -148,26 +196,66 @@ public class ContributorController {
 
             if (responseBody != null && responseBody.containsKey("refresh_token")) {
                 String refreshToken = (String) responseBody.get("refresh_token");
+                String userEmail = (state != null && !state.isBlank() && !state.equals("unknown")) ? state : "dropbox_" + System.currentTimeMillis() + "@example.com";
 
-                Contributor contributor = Contributor.builder()
-                        .email("dropbox_contributor_" + System.currentTimeMillis() + "@example.com")
-                        .cloudProvider("DROPBOX")
-                        .refreshToken(refreshToken)
-                        .maxStorageQuotaBytes(2L * 1024 * 1024 * 1024) // Default 2 GB donation
-                        .status("ACTIVE")
-                        .build();
+                Optional<Contributor> existingNode = contributorRepository.findByEmailAndCloudProvider(userEmail, "DROPBOX");
+                List<Contributor> existingUserNodes = contributorRepository.findAllByEmail(userEmail);
+                String existingPassword = !existingUserNodes.isEmpty() ? existingUserNodes.get(0).getPassword() : null;
 
-                contributorRepository.save(contributor);
+                Contributor contributor;
+                boolean shouldSendWelcomeEmail = false;
 
-                return ResponseEntity.ok("SUCCESS! Your Dropbox is now connected. Refresh Token saved to Database.");
+                if (existingNode.isPresent()) {
+                    contributor = existingNode.get();
+                    contributor.setRefreshToken(refreshToken);
+                    if (existingPassword != null) contributor.setPassword(existingPassword);
+                    if ("PENDING_OAUTH".equalsIgnoreCase(contributor.getStatus()) || contributor.getStatus() == null) {
+                        contributor.setStatus("INACTIVE");
+                        contributor.setAutoActivateAt(LocalDateTime.now().plusDays(4));
+                        shouldSendWelcomeEmail = true;
+                    }
+                    log.info("[OAuthCallback] OAuth completed and Dropbox node updated for {}", userEmail);
+                } else {
+                    contributor = Contributor.builder()
+                            .name(userEmail)
+                            .email(userEmail)
+                            .cloudProvider("DROPBOX")
+                            .refreshToken(refreshToken)
+                            .password(existingPassword)
+                            .pledgedStorageBytes(5L * 1024 * 1024 * 1024)
+                            .status("INACTIVE")
+                            .tamperFlags(0)
+                            .createdAt(LocalDateTime.now())
+                            .autoActivateAt(LocalDateTime.now().plusDays(4))
+                            .build();
+                    shouldSendWelcomeEmail = true;
+                    log.info("[OAuthCallback] OAuth completed and new Dropbox node created for {}", userEmail);
+                }
+
+                Contributor saved = contributorRepository.save(contributor);
+
+                if (shouldSendWelcomeEmail) {
+                    eventPublisher.publishEvent(EmailEvent.builder()
+                            .source(this)
+                            .eventType(EmailEvent.EventType.CONTRIBUTOR_REGISTERED)
+                            .recipientEmail(saved.getEmail())
+                            .recipientName(saved.getName() != null ? saved.getName() : saved.getEmail())
+                            .cloudProvider(saved.getCloudProvider())
+                            .pledgedBytes(saved.getPledgedStorageBytes())
+                            .build());
+                }
+
+                String redirectUrl = frontendBaseUrl + "/contributor/register?status=success&provider=Dropbox";
+                return ResponseEntity.status(HttpStatus.FOUND).location(URI.create(redirectUrl)).build();
             } else {
-                return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                        .body("Failed to retrieve refresh token from Dropbox.");
+                String redirectUrl = frontendBaseUrl + "/contributor/register?status=error&message=Failed%20to%20retrieve%20Dropbox%20refresh%20token";
+                return ResponseEntity.status(HttpStatus.FOUND).location(URI.create(redirectUrl)).build();
             }
 
         } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body("Dropbox OAuth Exchange Failed: " + e.getMessage());
+            log.error("[OAuthCallback] Dropbox callback error: {}", e.getMessage(), e);
+            String redirectUrl = frontendBaseUrl + "/contributor/register?status=error&message=" + e.getMessage();
+            return ResponseEntity.status(HttpStatus.FOUND).location(URI.create(redirectUrl)).build();
         }
     }
 }

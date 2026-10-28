@@ -1,43 +1,80 @@
 package com.cloudtransfer.stream.storage;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Service;
-import java.util.List;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
 
-@Service
+@Component
+@Slf4j
+@RequiredArgsConstructor
 public class MultiCloudRouter {
 
-    private static final Logger logger = LoggerFactory.getLogger(MultiCloudRouter.class);
+    private final GoogleDriveOAuthStorageProvider googleDriveOAuthStorageProvider;
+    private final DropboxStorageProvider dropboxStorageProvider;
 
-    // Spring automatically injects all active classes that implement CloudStorageProvider
-    private final List<CloudStorageProvider> providers;
-    private int currentIndex = 0;
+    /**
+     * Routes encrypted chunk upload using provider name and refresh token supplied by Distribution Engine.
+     */
+    public String routeChunkToCloud(String providerType, String refreshToken, String sessionId,
+                                    Integer chunkIndex, String filename, byte[] encryptedBytes) {
 
-    public MultiCloudRouter(List<CloudStorageProvider> providers) {
-        this.providers = providers;
+        log.info("[MultiCloudRouter] Routing Upload -> Session: {} | Chunk #{} | Target Provider: [{}]",
+                sessionId, chunkIndex, providerType);
+
+        if ("GOOGLE_DRIVE".equalsIgnoreCase(providerType)) {
+            if (refreshToken == null || refreshToken.isBlank()) {
+                throw new IllegalStateException("Distribution Engine assigned GOOGLE_DRIVE but refresh token is missing.");
+            }
+            return googleDriveOAuthStorageProvider.uploadChunkToContributor(refreshToken, sessionId, chunkIndex, filename, encryptedBytes);
+
+        } else if ("DROPBOX".equalsIgnoreCase(providerType)) {
+            if (refreshToken == null || refreshToken.isBlank()) {
+                throw new IllegalStateException("Distribution Engine assigned DROPBOX but refresh token is missing.");
+            }
+            return dropboxStorageProvider.uploadChunkToContributor(refreshToken, sessionId, chunkIndex, filename, encryptedBytes);
+
+        } else {
+            throw new IllegalArgumentException("Unsupported or unknown upload provider type: " + providerType);
+        }
     }
 
-    public String routeChunkToCloud(String sessionId, int chunkIndex, byte[] encryptedData) {
-        if (providers.isEmpty()) {
-            throw new RuntimeException("No cloud storage providers configured!");
+    /**
+     * Fallback routing overload for single-parameter upload calls.
+     */
+    public String routeChunkToCloud(String sessionId, Integer chunkIndex, byte[] encryptedBytes) {
+        log.warn("[MultiCloudRouter] Defaulting upload to Dropbox for session: {}", sessionId);
+        return dropboxStorageProvider.uploadChunkToContributor(null, sessionId, chunkIndex, "chunk_" + chunkIndex, encryptedBytes);
+    }
+
+    /**
+     * Routes encrypted chunk download from either Google Drive or Dropbox using provider name and refresh token.
+     */
+    public byte[] downloadChunkFromCloud(String providerType, String refreshToken, String sessionId, Integer chunkIndex) {
+        log.info("[MultiCloudRouter] Routing Download -> Session: {} | Chunk #{} | Provider: [{}]",
+                sessionId, chunkIndex, providerType);
+
+        if ("GOOGLE_DRIVE".equalsIgnoreCase(providerType)) {
+            if (refreshToken == null || refreshToken.isBlank()) {
+                throw new IllegalStateException("Cannot download from GOOGLE_DRIVE: Refresh token is missing.");
+            }
+            return googleDriveOAuthStorageProvider.downloadChunkFromContributor(refreshToken, sessionId, chunkIndex);
+
+        } else if ("DROPBOX".equalsIgnoreCase(providerType)) {
+            if (refreshToken == null || refreshToken.isBlank()) {
+                throw new IllegalStateException("Cannot download from DROPBOX: Refresh token is missing.");
+            }
+            return dropboxStorageProvider.downloadChunkFromContributor(refreshToken, sessionId, chunkIndex);
+
+        } else {
+            throw new IllegalArgumentException("Unsupported or unknown download provider type: " + providerType);
         }
+    }
 
-        CloudStorageProvider selectedProvider = providers.get(currentIndex);
-        currentIndex = (currentIndex + 1) % providers.size();
-
-        try {
-            logger.info("Routing Session: {} | Chunk {} to {}", sessionId, chunkIndex, selectedProvider.getProviderName());
-
-            // Attempt real upload
-            String cloudFileId = selectedProvider.uploadChunk(sessionId, chunkIndex, encryptedData);
-            logger.info("Upload successful. Cloud File ID: {}", cloudFileId);
-            return cloudFileId;
-
-        } catch (Exception e) {
-            // FALLBACK FOR LOCAL TESTING: If dummy keys fail, fake the upload instead of crashing!
-            logger.warn("Real cloud upload failed (using dummy keys). Faking successful upload for testing...");
-            return "mock_cloud_file_" + java.util.UUID.randomUUID().toString().substring(0, 8);
-        }
+    /**
+     * Fallback routing overload for single-parameter download calls.
+     */
+    public byte[] downloadChunkFromCloud(String sessionId, Integer chunkIndex) {
+        log.warn("[MultiCloudRouter] Defaulting download to Dropbox for session: {}", sessionId);
+        return dropboxStorageProvider.downloadChunkFromContributor(null, sessionId, chunkIndex);
     }
 }

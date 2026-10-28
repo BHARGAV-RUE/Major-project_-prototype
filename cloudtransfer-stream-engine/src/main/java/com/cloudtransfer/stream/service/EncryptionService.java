@@ -22,14 +22,15 @@ public class EncryptionService {
     private SecretKeySpec get256BitKey() throws Exception {
         byte[] keyBytes = PROTOTYPE_MASTER_KEY.getBytes(StandardCharsets.UTF_8);
         MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
-        byte[] hashedKey = sha256.digest(keyBytes); // Guarantees exactly 256 bits (32 bytes)
+        byte[] hashedKey = sha256.digest(keyBytes);
         return new SecretKeySpec(hashedKey, ALGORITHM);
     }
 
-    /**
-     * Alias method to support calls to encrypt() from controllers.
-     */
     public byte[] encrypt(byte[] rawChunkData) {
+        return encryptChunk(rawChunkData);
+    }
+
+    public byte[] encryptChunk(byte[] rawChunkData, String sessionId, Integer chunkIndex) {
         return encryptChunk(rawChunkData);
     }
 
@@ -39,22 +40,17 @@ public class EncryptionService {
      */
     public byte[] encryptChunk(byte[] rawChunkData) {
         try {
-            // 1. Generate a random 12-byte Nonce (Initialization Vector)
             byte[] nonce = new byte[NONCE_SIZE_BYTES];
             SecureRandom random = new SecureRandom();
             random.nextBytes(nonce);
 
-            // 2. Configure ChaCha20 Parameter Spec (12-byte nonce, initial counter = 1)
             ChaCha20ParameterSpec paramSpec = new ChaCha20ParameterSpec(nonce, 1);
 
-            // 3. Initialize Cipher in ENCRYPT_MODE
             Cipher cipher = Cipher.getInstance(ALGORITHM);
             cipher.init(Cipher.ENCRYPT_MODE, get256BitKey(), paramSpec);
 
-            // 4. Encrypt the raw in-memory chunk
             byte[] encryptedData = cipher.doFinal(rawChunkData);
 
-            // 5. Prepend Nonce to encrypted payload (Required for decryption)
             byte[] combinedPayload = new byte[NONCE_SIZE_BYTES + encryptedData.length];
             System.arraycopy(nonce, 0, combinedPayload, 0, NONCE_SIZE_BYTES);
             System.arraycopy(encryptedData, 0, combinedPayload, NONCE_SIZE_BYTES, encryptedData.length);
@@ -66,19 +62,20 @@ public class EncryptionService {
         }
     }
 
+    public byte[] decryptChunk(byte[] combinedPayload, String sessionId, Integer chunkIndex) {
+        return decryptChunk(combinedPayload);
+    }
+
     /**
      * Decrypts a ChaCha20 encrypted payload.
      */
     public byte[] decryptChunk(byte[] combinedPayload) {
         try {
-            // 1. Extract Nonce from the first 12 bytes
             byte[] nonce = Arrays.copyOfRange(combinedPayload, 0, NONCE_SIZE_BYTES);
             byte[] encryptedData = Arrays.copyOfRange(combinedPayload, NONCE_SIZE_BYTES, combinedPayload.length);
 
-            // 2. Configure ChaCha20 Parameter Spec
             ChaCha20ParameterSpec paramSpec = new ChaCha20ParameterSpec(nonce, 1);
 
-            // 3. Initialize Cipher in DECRYPT_MODE
             Cipher cipher = Cipher.getInstance(ALGORITHM);
             cipher.init(Cipher.DECRYPT_MODE, get256BitKey(), paramSpec);
 
@@ -90,7 +87,7 @@ public class EncryptionService {
     }
 
     /**
-     * Computes the SHA-256 hash of an encrypted chunk for Merkle tree generation & Polygon blockchain logging.
+     * Computes the SHA-256 hash of an encrypted chunk.
      */
     public String calculateSha256Hash(byte[] data) {
         try {

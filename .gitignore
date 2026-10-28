@@ -31,3 +31,24 @@ build/
 
 ### VS Code ###
 .vscode/
+
+# Node dependencies
+node_modules/
+Cloudtransfer-frontend/node_modules/
+
+# Build outputs & target folders
+target/
+cloudtransfer-core/target/
+cloudtransfer-stream-engine/target/
+dist/
+Cloudtransfer-frontend/dist/
+
+# IDE & OS files
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Environment secret files
+.env
