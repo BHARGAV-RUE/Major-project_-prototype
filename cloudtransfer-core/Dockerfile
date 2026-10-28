@@ -10,14 +10,17 @@ COPY cloudtransfer-stream-engine/pom.xml cloudtransfer-stream-engine/
 # Copy Core source code
 COPY cloudtransfer-core/src cloudtransfer-core/src
 
-# Build Core module, skipping test compilation entirely
+# Build Core module
 RUN mvn clean package -pl cloudtransfer-core -am -Dmaven.test.skip=true
+
+# Remove non-executable plain jar to prevent copy collision
+RUN rm -f /app/cloudtransfer-core/target/*-plain.jar
 
 # Step 2: Minimal Runtime Container
 FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
 
-# Copy built JAR from builder phase
+# Copy the executable JAR
 COPY --from=builder /app/cloudtransfer-core/target/*.jar app.jar
 
 EXPOSE 8080
