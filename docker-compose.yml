@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  core-engine:
+    build:
+      context: .
+      dockerfile: cloudtransfer-core/Dockerfile
+    container_name: ct-core-engine
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - SPRING_DATASOURCE_URL=${SPRING_DATASOURCE_URL}
+      - SPRING_DATASOURCE_USERNAME=${SPRING_DATASOURCE_USERNAME}
+      - SPRING_DATASOURCE_PASSWORD=${SPRING_DATASOURCE_PASSWORD}
+      - APP_ADMIN_PASSWORD=${APP_ADMIN_PASSWORD:-admin}
+      - CLOUDTRANSFER_STREAM_URL=http://stream-engine:8081/api/v1
+      - APP_FRONTEND_BASE_URL=${APP_FRONTEND_BASE_URL:-http://localhost}
+      - GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID}
+      - GOOGLE_OAUTH_CLIENT_SECRET=${GOOGLE_OAUTH_CLIENT_SECRET}
+      - GOOGLE_OAUTH_REDIRECT_URI=${GOOGLE_OAUTH_REDIRECT_URI}
+      - DROPBOX_OAUTH_CLIENT_ID=${DROPBOX_OAUTH_CLIENT_ID}
+      - DROPBOX_OAUTH_CLIENT_SECRET=${DROPBOX_OAUTH_CLIENT_SECRET}
+      - DROPBOX_OAUTH_REDIRECT_URI=${DROPBOX_OAUTH_REDIRECT_URI}
+      - BLOCKCHAIN_RPC_URL=${BLOCKCHAIN_RPC_URL}
+      - BLOCKCHAIN_WALLET_PRIVATE_KEY=${BLOCKCHAIN_WALLET_PRIVATE_KEY}
+      - BLOCKCHAIN_CONTRACT_ADDRESS=${BLOCKCHAIN_CONTRACT_ADDRESS}
+      - SPRING_MAIL_HOST=${SPRING_MAIL_HOST}
+      - SPRING_MAIL_PORT=${SPRING_MAIL_PORT}
+      - SPRING_MAIL_USERNAME=${SPRING_MAIL_USERNAME}
+      - SPRING_MAIL_PASSWORD=${SPRING_MAIL_PASSWORD}
+    restart: always
+
+  stream-engine:
+    build:
+      context: .
+      dockerfile: cloudtransfer-stream-engine/Dockerfile
+    container_name: ct-stream-engine
+    ports:
+      - "8081:8081"
+    environment:
+      - PORT=8081
+      - CLOUDTRANSFER_CORE_URL=http://core-engine:8080/api/v1
+      - GOOGLE_OAUTH_CLIENT_ID=${GOOGLE_OAUTH_CLIENT_ID}
+      - GOOGLE_OAUTH_CLIENT_SECRET=${GOOGLE_OAUTH_CLIENT_SECRET}
+      - DROPBOX_OAUTH_CLIENT_ID=${DROPBOX_OAUTH_CLIENT_ID}
+      - DROPBOX_OAUTH_CLIENT_SECRET=${DROPBOX_OAUTH_CLIENT_SECRET}
+    depends_on:
+      - core-engine
+    restart: always
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Cloudtransfer-frontend/Dockerfile
+    container_name: ct-frontend
+    ports:
+      - "80:80"
+    environment:
+      - VITE_CORE_API_URL=http://localhost:8080/api/v1
+      - VITE_STREAM_API_URL=http://localhost:8081/api/v1
+    depends_on:
+      - core-engine
+      - stream-engine
+    restart: always
