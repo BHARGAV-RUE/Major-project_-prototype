@@ -4,6 +4,7 @@ import com.cloudtransfer.stream.dto.CloudProviderTokenDTO;
 import com.cloudtransfer.stream.storage.MultiCloudRouter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
@@ -22,13 +23,14 @@ public class FileDownloadProcessorService {
     private final EncryptionService encryptionService;
     private final RestTemplate restTemplate = new RestTemplate();
 
-    private static final String CORE_API_BASE = "http://localhost:8080/api/v1/transfers";
+    @Value("${cloudtransfer.core.url:http://localhost:8080/api/v1}")
+    private String coreEngineBaseUrl;
 
     public byte[] downloadAndDecryptChunk(String sessionId, Integer chunkIndex) throws Exception {
         log.info("[FileDownloadProcessor] Processing download for session: {}, chunkIndex: {}", sessionId, chunkIndex);
 
         // 1. Fetch chunk assignment metadata from Core Engine
-        String coreUrl = CORE_API_BASE + "/" + sessionId + "/chunk-assignments";
+        String coreUrl = coreEngineBaseUrl + "/transfers/" + sessionId + "/chunk-assignments";
         ResponseEntity<List<CloudProviderTokenDTO>> response = restTemplate.exchange(
                 coreUrl,
                 HttpMethod.GET,
@@ -127,7 +129,7 @@ public class FileDownloadProcessorService {
 
     private void reportTamperedChunkToCore(String sessionId, int chunkIndex) {
         try {
-            String url = CORE_API_BASE + "/" + sessionId + "/chunks/" + chunkIndex + "/tampered";
+            String url = coreEngineBaseUrl + "/transfers/" + sessionId + "/chunks/" + chunkIndex + "/tampered";
             restTemplate.postForEntity(url, null, Map.class);
             log.info("[FileDownloadProcessor] Reported tampered/missing primary chunk #{} for session {} to Core Engine.", chunkIndex, sessionId);
         } catch (Exception ex) {

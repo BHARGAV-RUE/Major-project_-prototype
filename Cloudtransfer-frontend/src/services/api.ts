@@ -10,8 +10,8 @@ import {
   TransferManifest,
 } from '../types/transfer';
 
-const CORE_API = 'http://localhost:8080/api/v1';
-const STREAM_API = 'http://localhost:8081/api/v1';
+const CORE_API = import.meta.env.VITE_CORE_API_URL || 'http://localhost:8080/api/v1';
+const STREAM_API = import.meta.env.VITE_STREAM_API_URL || 'http://localhost:8081/api/v1';
 
 export const api = {
   // --- 1. TRANSFER OPERATIONS ---
@@ -32,7 +32,8 @@ export const api = {
     sessionId: string,
     chunkIndex: number,
     chunkBlob: Blob,
-    filename: string
+    filename: string,
+    tokens?: any
   ): Promise<any> {
     const formData = new FormData();
     formData.append('sessionId', sessionId);

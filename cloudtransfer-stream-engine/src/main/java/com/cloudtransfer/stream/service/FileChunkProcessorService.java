@@ -3,6 +3,7 @@ package com.cloudtransfer.stream.service;
 import com.cloudtransfer.stream.dto.CloudProviderTokenDTO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
@@ -27,6 +28,9 @@ public class FileChunkProcessorService {
     private final EncryptionService encryptionService;
     private final HashService hashService;
     private final RestTemplate restTemplate = new RestTemplate();
+
+    @Value("${cloudtransfer.core.url:http://localhost:8080/api/v1}")
+    private String coreEngineBaseUrl;
 
     private final Map<String, List<CloudProviderTokenDTO>> sessionTokenRegistry = new ConcurrentHashMap<>();
     private final Map<String, List<Map<String, Object>>> sessionHashBuffer = new ConcurrentHashMap<>();
@@ -185,7 +189,7 @@ public class FileChunkProcessorService {
 
     private List<CloudProviderTokenDTO> fetchTokensFromCoreEngine(String sessionId) {
         try {
-            String coreUrl = "http://localhost:8080/api/v1/transfers/" + sessionId + "/chunk-assignments";
+            String coreUrl = coreEngineBaseUrl + "/transfers/" + sessionId + "/chunk-assignments";
             ResponseEntity<List<CloudProviderTokenDTO>> response = restTemplate.exchange(
                     coreUrl,
                     HttpMethod.GET,

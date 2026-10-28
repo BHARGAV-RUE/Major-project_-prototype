@@ -13,6 +13,7 @@ import com.cloudtransfer.core.repository.TransferRecipientRepository;
 import com.cloudtransfer.core.repository.TransferSessionRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpMethod;
@@ -27,7 +28,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 @Service
 @Slf4j
@@ -42,7 +42,11 @@ public class TransferService {
     private final ApplicationEventPublisher eventPublisher;
     private final RestTemplate restTemplate = new RestTemplate();
 
-    private static final String STREAM_ENGINE_BASE_URL = "http://localhost:8081/api/v1/stream";
+    @Value("${cloudtransfer.stream.url:http://localhost:8081/api/v1}")
+    private String streamEngineBaseUrl;
+
+    @Value("${app.frontend.base-url:http://localhost:5173}")
+    private String frontendBaseUrl;
 
     public record Blueprint(int totalChunks, int chunkSizeBytes) {}
 
@@ -200,7 +204,7 @@ public class TransferService {
         }
 
         // Dispatch Email Events for recipients & sender asynchronously
-        String downloadUrl = "http://localhost:5173/download/" + session.getId();
+        String downloadUrl = frontendBaseUrl + "/download/" + session.getId();
         List<String> recipientEmailList = new ArrayList<>();
 
         if (session.getRecipients() != null) {
@@ -244,7 +248,7 @@ public class TransferService {
 
     private void registerSessionWithStreamEngine(String sessionId, int totalChunks, List<CloudProviderTokenDTO> tokens) {
         try {
-            String url = STREAM_ENGINE_BASE_URL + "/session/register";
+            String url = streamEngineBaseUrl + "/stream/session/register";
             Map<String, Object> payload = new HashMap<>();
             payload.put("sessionId", sessionId);
             payload.put("totalChunks", totalChunks);
@@ -259,7 +263,7 @@ public class TransferService {
 
     private List<Map<String, Object>> fetchBufferedHashesFromStreamEngine(String sessionId) {
         try {
-            String url = STREAM_ENGINE_BASE_URL + "/session/" + sessionId + "/hashes";
+            String url = streamEngineBaseUrl + "/stream/session/" + sessionId + "/hashes";
             ResponseEntity<List<Map<String, Object>>> response = restTemplate.exchange(
                     url,
                     HttpMethod.GET,

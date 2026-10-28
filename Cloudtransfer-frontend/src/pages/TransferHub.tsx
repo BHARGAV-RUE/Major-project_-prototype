@@ -89,7 +89,7 @@ export const TransferHub: React.FC = () => {
       const payloadBlob = await zip.generateAsync({ type: 'blob' });
       const payloadFilename = 'CloudTransfer_Files.zip';
 
-      // Step 2: Initialize ONE session on Core Engine (Port 8080)
+      // Step 2: Initialize ONE session on Core Engine
       const startRes = await api.startTransfer({
         senderEmail,
         senderName,
@@ -103,7 +103,7 @@ export const TransferHub: React.FC = () => {
 
       const { sessionId, tokens, totalChunks, chunkSizeBytes } = startRes;
 
-      // Step 3: Slice blob into chunks using backend-calculated chunkSizeBytes and stream to Stream Engine (Port 8081)
+      // Step 3: Slice blob into chunks using backend-calculated chunkSizeBytes and stream to Stream Engine
       for (let i = 0; i < totalChunks; i++) {
         const start = i * chunkSizeBytes;
         const end = Math.min(start + chunkSizeBytes, payloadBlob.size);
@@ -116,7 +116,7 @@ export const TransferHub: React.FC = () => {
       // Step 4: Mark session complete ONCE -> Triggers EXACTLY 1 notification email
       await api.completeTransfer(sessionId);
 
-      setDownloadUrl(`http://localhost:5173/download/${sessionId}`);
+      setDownloadUrl(`${window.location.origin}/download/${sessionId}`);
       setTransferSuccess(true);
     } catch (err: any) {
       setErrorMessage(err.message || 'An error occurred during transfer.');
