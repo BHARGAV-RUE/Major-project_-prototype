@@ -137,7 +137,7 @@ async function createZipArchive(files: { file: File; name: string }[]): Promise<
   eocdView.setUint32(16, cdOffset, true);
 
   const allParts = [...localHeaders, ...centralDirectories, eocd];
-  return new Blob(allParts, { type: 'application/zip' });
+  return new Blob(allParts as unknown as BlobPart[], { type: 'application/zip' });
 }
 
 function calculateCRC32(bytes: Uint8Array): number {

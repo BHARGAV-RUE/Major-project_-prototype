@@ -235,7 +235,9 @@ export const AdminControlTower: React.FC = () => {
             <div className="p-2 bg-cyan-500/20 text-cyan-400 rounded-lg text-lg font-bold">CT</div>
             <div>
               <h2 className="text-sm font-extrabold text-white tracking-wider">CONTROL TOWER</h2>
-              <span className="text-[10px] text-emerald-400 font-mono">● LIVE AUDIT ON</span>
+              <span className="text-[10px] text-emerald-400 font-mono">
+                {loading ? '● SYNCING...' : '● LIVE AUDIT ON'}
+              </span>
             </div>
           </div>
 
@@ -311,9 +313,10 @@ export const AdminControlTower: React.FC = () => {
         <div className="space-y-2 pt-4 border-t border-slate-800">
           <button
             onClick={() => loadAllData(adminSecret)}
-            className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-cyan-400 text-xs font-mono rounded-lg transition"
+            disabled={loading}
+            className="w-full py-2 bg-slate-800 hover:bg-slate-700 text-cyan-400 text-xs font-mono rounded-lg transition disabled:opacity-50"
           >
-            🔄 REFRESH DATA
+            {loading ? '⏳ REFRESHING...' : '🔄 REFRESH DATA'}
           </button>
           <button
             onClick={handleLogout}

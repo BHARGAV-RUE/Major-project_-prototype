@@ -1,3 +1,5 @@
+/// <reference types="vite/client" />
+
 import {
   AdminTelemetry,
   AdminTransferSession,
@@ -9,6 +11,12 @@ import {
   TamperAlert,
   TransferManifest,
 } from '../types/transfer';
+
+export interface FileAttachment {
+  file: File;
+  id: string;
+  size: number;
+}
 
 const CORE_API = import.meta.env.VITE_CORE_API_URL || 'http://localhost:8080/api/v1';
 const STREAM_API = import.meta.env.VITE_STREAM_API_URL || 'http://localhost:8081/api/v1';
@@ -33,7 +41,7 @@ export const api = {
     chunkIndex: number,
     chunkBlob: Blob,
     filename: string,
-    tokens?: any
+    _tokens?: any
   ): Promise<any> {
     const formData = new FormData();
     formData.append('sessionId', sessionId);
