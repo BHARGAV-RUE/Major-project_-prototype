@@ -10,8 +10,8 @@ COPY cloudtransfer-stream-engine/pom.xml cloudtransfer-stream-engine/
 # Copy Stream Engine source code
 COPY cloudtransfer-stream-engine/src cloudtransfer-stream-engine/src
 
-# Build Stream Engine module using standard 'mvn'
-RUN mvn clean package -pl cloudtransfer-stream-engine -am -DskipTests
+# Build Stream Engine module, skipping test compilation entirely
+RUN mvn clean package -pl cloudtransfer-stream-engine -am -Dmaven.test.skip=true
 
 # Step 2: Minimal Runtime Container
 FROM eclipse-temurin:21-jre-alpine
